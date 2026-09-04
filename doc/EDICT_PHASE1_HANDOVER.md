@@ -14,7 +14,7 @@ This document lets a new conversation continue the edict三省 Phase 1 desktop w
 - Desktop stack: Electron, React, TypeScript, Vite, Python sidecar.
 - Desktop development port: `127.0.0.1:1517` only.
 - Sidecar transport: stdin/stdout JSONL only; it must not listen on HTTP, TCP, or other network ports.
-- Phase 1 exclusions: application signing, notarization, auto-update, release publishing, embedded Python runtime, remote deployment, desktop database, and automatic tool installation.
+- Phase 1 exclusions: Developer ID Application signing, notarization, auto-update, release publishing, embedded Python runtime, remote deployment, desktop database, and automatic tool installation.
 
 ## Repository and Git Delivery State
 
@@ -23,7 +23,7 @@ This document lets a new conversation continue the edict三省 Phase 1 desktop w
 - Desktop delivery commit: `a7ea8df` (`feat: add edict三省 desktop app migration`)
 - The branch has been pushed to the `Logosss1/edict` fork.
 - A direct push attempt to upstream `cft0808/edict` returned HTTP 403.
-- No pull request is recorded in this handover; do not infer or invent a PR URL.
+- GitHub pull request [#342](https://github.com/cft0808/edict/pull/342) is `OPEN` for `cft0808/edict:main <- Logosss1:feat/edict-three-provinces-desktop`.
 
 The current delivery is already represented by the commit above. For any follow-up work, inspect the working tree and stage only intentionally changed files rather than using a broad add operation.
 
@@ -172,8 +172,8 @@ npm run dist:mac
 Script intent:
 
 - `npm run verify`: typecheck, Vitest, and production build.
-- `npm run package:mac`: unsigned `.app` directory for local smoke checks.
-- `npm run dist:mac`: unsigned arm64 and x64 DMG files under `release/`.
+- `npm run package:mac`: local `.app` directory for smoke checks.
+- `npm run dist:mac`: produces local arm64 and x64 DMG test release packages under `release/`. These local release artifacts were not signed with a Developer ID Application signature and were not notarized; the embedded application-bundle signature states are recorded below.
 
 ## Build Evidence
 
@@ -223,6 +223,12 @@ Bundle metadata verified in the generated application packages:
 - `CFBundleIdentifier`: `io.edict.desktop`
 - `icon.icns` exists in the application bundle.
 
+Only the following local application-bundle signature states have been confirmed:
+
+- arm64 bundle: ad-hoc signed.
+- x64 bundle: unsigned.
+- The local bundles were not signed with a Developer ID Application signature, and the local release artifacts were not notarized.
+
 The generated DMG files are ignored by Git and are not included in the source delivery commit.
 
 ## Local Environment Used for Verification
@@ -264,14 +270,14 @@ Target baseline remains Node 20+ and Python 3.12. Python 3.12 was not present on
 
 ### Distribution blockers
 
-1. The application has no Developer ID Application signature.
-2. The application has not been notarized.
+1. The local release artifacts were not signed with a Developer ID Application signature.
+2. The local release artifacts have not been notarized.
 3. The x64 artifact was built and verified as a DMG, but not manually launched on an Intel Mac.
 4. `npm audit` did not complete within the local timeout during the previous review; do not claim a clean dependency audit without rerunning it.
 
 Consequences:
 
-- DMG files are acceptable only as explicitly labeled unsigned Alpha/test builds.
+- The DMG files are acceptable only as explicitly labeled local Alpha/test release packages that were not signed with a Developer ID Application signature and were not notarized. The only verified embedded application-bundle signature states are arm64 ad-hoc signed and x64 unsigned; do not generalize these states beyond the verified artifacts.
 - Do not represent them as production-ready public releases.
 
 ## Repository Follow-ups
@@ -348,7 +354,7 @@ These are development values, not verified production credentials. They must not
 
 ## Current Status and Recommended Next Steps
 
-The current evidence supports an unsigned Phase 1 desktop baseline: the `a7ea8df` delivery commit exists, the branch is available on the `Logosss1/edict` fork, the arm64 Electron initial-screen/bridge/sidecar health-status flow has been browser-verified, and the arm64/x64 DMGs pass `hdiutil verify`. No PR creation or PR URL is recorded in this handover.
+The current evidence supports a Phase 1 local-test desktop baseline without Developer ID Application signing or notarization: the `a7ea8df` delivery commit exists, the branch is available on the `Logosss1/edict` fork, the arm64 Electron initial-screen/bridge/sidecar health-status flow has been browser-verified, and the arm64/x64 DMGs pass `hdiutil verify`. GitHub pull request [#342](https://github.com/cft0808/edict/pull/342) is `OPEN` for `cft0808/edict:main <- Logosss1:feat/edict-three-provinces-desktop`.
 
 The following items remain pending and are not described as completed:
 
@@ -376,7 +382,7 @@ npm ci
 npm run verify
 python3.12 -m unittest discover -s ../backend/tests -v
 
-# Build unsigned local macOS artifacts.
+# Build local macOS test artifacts without Developer ID Application signing or notarization.
 npm run package:mac
 npm run dist:mac
 

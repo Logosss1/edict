@@ -1,14 +1,14 @@
-# Edict Phase 1 Handover
+# edict三省 Phase 1 Handover
 
-Last updated: 2026-09-03
+Last updated: 2026-09-04
 
 ## Purpose
 
-This document lets a new conversation continue the Edict Phase 1 desktop work without relying on prior chat context. It records the current implementation state, local build evidence, known gaps, repository risks, and the smallest recommended next steps.
+This document lets a new conversation continue the edict三省 Phase 1 desktop work without relying on prior chat context. It records the current implementation state, local build evidence, known gaps, repository risks, and the smallest recommended next steps.
 
 ## Product Scope Confirmed
 
-- Product: Edict desktop control console.
+- Product: edict三省 desktop control console.
 - Platform: macOS 13 Ventura or later.
 - Architectures: Apple Silicon (`arm64`) and Intel (`x64`).
 - Desktop stack: Electron, React, TypeScript, Vite, Python sidecar.
@@ -16,35 +16,18 @@ This document lets a new conversation continue the Edict Phase 1 desktop work wi
 - Sidecar transport: stdin/stdout JSONL only; it must not listen on HTTP, TCP, or other network ports.
 - Phase 1 exclusions: application signing, notarization, auto-update, release publishing, embedded Python runtime, remote deployment, desktop database, and automatic tool installation.
 
-## Repository and Git Baseline
+## Repository and Git Delivery State
 
 - Repository root: `/Users/happy/Documents/crow5/edict`
-- Branch: `main`
-- Baseline commit: `14a207557719c046af0f993a7bff1cc5a5015b33`
-- Remote: `origin` points to the existing GitHub repository. Do not push unless the user explicitly asks.
-- No commit, push, release, or remote configuration change has been made during the desktop implementation or build review.
+- Current branch: `feat/edict-three-provinces-desktop`
+- Desktop delivery commit: `a7ea8df` (`feat: add edict三省 desktop app migration`)
+- The branch has been pushed to the `Logosss1/edict` fork.
+- A direct push attempt to upstream `cft0808/edict` returned HTTP 403.
+- No pull request is recorded in this handover; do not infer or invent a PR URL.
 
-Current tracked modifications:
+The current delivery is already represented by the commit above. For any follow-up work, inspect the working tree and stage only intentionally changed files rather than using a broad add operation.
 
-```text
-.github/workflows/ci.yml
-.gitignore
-README.md
-edict/frontend/src/App.tsx
-edict/frontend/src/index.css
-```
-
-Current untracked source and documentation areas:
-
-```text
-database/
-doc/
-project/
-prototype/
-utils/
-```
-
-Important: do not use `git add .` blindly. The existing Web frontend edits under `edict/frontend/` and the new desktop implementation under `project/` should be reviewed and staged deliberately.
+The generated DMG artifacts are local release outputs under the Git-ignored `project/frontend/release/` directory; they are not included in the source delivery commit.
 
 ## Required Project Layout
 
@@ -84,7 +67,7 @@ Key files:
 
 ```text
 project/frontend/electron/main.ts
-project/frontend/electron/preload.ts
+project/frontend/electron/preload.cts
 project/frontend/src/App.tsx
 project/frontend/src/styles.css
 project/frontend/package.json
@@ -99,7 +82,7 @@ Security boundaries currently implemented:
 - `contextIsolation: true`
 - `nodeIntegration: false`
 - `sandbox: true`
-- The renderer uses only `window.edictDesktop` from `preload.ts`.
+- The renderer uses only `window.edictDesktop` from `preload.cts`.
 - The sidecar does not import or create a network listener.
 
 ## JSONL Protocol
@@ -144,22 +127,30 @@ The desktop stylesheet at `project/frontend/src/styles.css` is currently a dark 
 
 ### Existing Web dashboard refresh
 
-`edict/frontend/src/App.tsx` and `edict/frontend/src/index.css` contain uncommitted work that refreshes the existing Web dashboard toward a warm-white and graphite workspace. It includes a sidebar, command menu, task composer, responsive behavior, and visual polish.
+`edict/frontend/src/App.tsx` and `edict/frontend/src/index.css` contain a separate refresh of the existing Web dashboard toward a warm-white and graphite workspace. It includes a sidebar, command menu, task composer, responsive behavior, and visual polish.
 
 Important functional gap: the new Web composer currently clears the local form, switches to the edicts tab, and shows a toast. It does not call the real task creation API. Do not describe this interaction as a completed task creation feature until it is connected to the existing backend flow and verified.
+
+### Real Electron verification coverage
+
+- On the local arm64 macOS machine, a real Electron launch has verified the initial screen, the preload bridge, and the sidecar `health`/`status` flow in the browser window.
+- Full acceptance is not complete: task submission through completion/failure, settings taking effect, filtering/search, responsive behavior, keyboard interactions, and launch on a real Intel machine remain unverified.
 
 ## Desktop Build Configuration
 
 File: `project/frontend/package.json`
 
 ```text
-Application name: Edict
+Application name: edict三省
 Application ID: io.edict.desktop
 Application version: 0.1.0
 Minimum macOS version: 13.0
 Architectures: arm64 and x64
 Packager: electron-builder 25.1.8
 Electron: 33.4.11 installed locally
+
+Custom application icon: project/frontend/assets/edict-three-provinces.icns
+Vector source: project/frontend/assets/edict-three-provinces.svg
 ```
 
 Relevant scripts:
@@ -186,7 +177,7 @@ Script intent:
 
 ## Build Evidence
 
-The local macOS build completed successfully without source or configuration changes.
+The local macOS desktop build completed successfully; the evidence below describes the delivered desktop state.
 
 Verified commands:
 
@@ -195,8 +186,8 @@ cd project/frontend
 npm run verify
 npm run dist:mac
 
-hdiutil verify release/Edict-0.1.0-arm64.dmg
-hdiutil verify release/Edict-0.1.0.dmg
+hdiutil verify release/edict三省-0.1.0-arm64.dmg
+hdiutil verify release/edict三省-0.1.0.dmg
 ```
 
 Results:
@@ -204,28 +195,35 @@ Results:
 ```text
 npm run verify: passed
   - TypeScript typecheck: passed
-  - Vitest: 1 file, 1 test passed
+  - Vitest: 6 test files, 17 tests passed
   - Vite production build: passed
 
-Python sidecar unittest: passed, 3/3
+Python sidecar unittest: passed, 9/9
 DMG integrity: arm64 and x64 passed hdiutil verify
+Real Electron/browser verification on local arm64 macOS: initial screen, preload bridge, sidecar health/status passed
 ```
 
 Generated DMG files:
 
-| Architecture | File | Size | SHA-256 |
-| --- | --- | ---: | --- |
-| arm64 | `project/frontend/release/Edict-0.1.0-arm64.dmg` | 112,016,739 bytes | `1eb7547c28f471367078385f4f6b1ed37d4e1581848c4f8c047b617439ac4eb6` |
-| x64 | `project/frontend/release/Edict-0.1.0.dmg` | 116,617,350 bytes | `658cd375741687f0fac380bbd72a55ba7b04720d380ca20b2f7045534b9d5ec3` |
+| Architecture | File | Integrity |
+| --- | --- | --- |
+| arm64 | `project/frontend/release/edict三省-0.1.0-arm64.dmg` | `hdiutil verify` passed |
+| x64 | `project/frontend/release/edict三省-0.1.0.dmg` | `hdiutil verify` passed |
 
 Generated application bundles:
 
 ```text
-project/frontend/release/mac-arm64/Edict.app
-project/frontend/release/mac/Edict.app
+project/frontend/release/mac-arm64/edict三省.app
+project/frontend/release/mac/edict三省.app
 ```
 
-All build outputs are intentionally ignored by Git.
+Bundle metadata verified in the generated application packages:
+
+- `Info.plist` display name: `edict三省`
+- `CFBundleIdentifier`: `io.edict.desktop`
+- `icon.icns` exists in the application bundle.
+
+The generated DMG files are ignored by Git and are not included in the source delivery commit.
 
 ## Local Environment Used for Verification
 
@@ -249,46 +247,42 @@ Target baseline remains Node 20+ and Python 3.12. Python 3.12 was not present on
    - A target Mac without a compatible Python interpreter may open the app but fail to start the sidecar.
    - Decide between a documented Python 3.12 prerequisite with clear detection/error UI, or packaging an embedded runtime/native sidecar.
 
-2. The desktop sidecar is an in-memory proof of flow, not an integration with the existing Edict backend.
+2. The desktop sidecar is an in-memory proof of flow, not an integration with the legacy backend.
    - It has no persistence, authentication, database, orchestration, or existing task schema mapping.
    - Before expanding functionality, explicitly decide whether the desktop app should adapt the existing FastAPI system or grow an independent local sidecar domain.
 
-3. Electron startup lifecycle needs real end-to-end verification.
-   - The renderer requests `health` and `status` immediately on mount.
-   - The main process currently creates the window, then starts the sidecar and registers IPC handling.
-   - A cold-start race, sidecar availability error, or IPC ordering problem must be verified with a real running Electron window and then covered by an integration test.
+3. Full Electron and product acceptance still needs end-to-end verification.
+    - The renderer requests `health` and `status` immediately on mount.
+    - The main process currently creates the window, then starts the sidecar and registers IPC handling.
+    - Real arm64 macOS browser verification has covered the initial screen, preload bridge, and sidecar `health`/`status` flow.
+    - A cold-start race, sidecar availability error, or IPC ordering problem still needs coverage beyond that initial flow.
+    - Task submission through completion/failure, settings taking effect, filtering/search, responsive behavior, keyboard interactions, and real Intel-machine launch remain unverified.
 
-4. The desktop frontend test suite is only a baseline test.
-   - `project/frontend/src/App.test.tsx` currently asserts only the fixed development port range.
-   - Add UI/IPC coverage for initial refresh, status events, successful submission, empty input, sidecar errors, and recovery.
+4. The desktop frontend test suite is a baseline, not full acceptance coverage.
+    - Current Vitest evidence is 6 test files with 17 tests passed.
+    - Full UI/IPC coverage for task lifecycle, settings, filtering/search, responsive behavior, keyboard interactions, sidecar errors, and recovery remains pending.
 
 ### Distribution blockers
 
 1. The application has no Developer ID Application signature.
 2. The application has not been notarized.
-3. The package uses the default Electron icon; no custom `.icns` is configured.
-4. The x64 artifact was built and verified as a DMG, but not manually launched on an Intel Mac.
-5. `npm audit` did not complete within the local timeout during the previous review; do not claim a clean dependency audit without rerunning it.
+3. The x64 artifact was built and verified as a DMG, but not manually launched on an Intel Mac.
+4. `npm audit` did not complete within the local timeout during the previous review; do not claim a clean dependency audit without rerunning it.
 
 Consequences:
 
 - DMG files are acceptable only as explicitly labeled unsigned Alpha/test builds.
 - Do not represent them as production-ready public releases.
 
-## Git and GitHub Upload Readiness
+## Repository Follow-ups
 
-### Must fix before uploading the desktop source
+The desktop source delivery is represented by commit `a7ea8df`, and the branch has been pushed to the `Logosss1/edict` fork. The notes below separate completed source tracking from future repository maintenance.
 
-1. Fix `.gitignore` so `project/backend/sidecar/__init__.py` is not ignored.
-   - Current rule: `_*.py`
-   - This matches `__init__.py`.
-   - Recommended minimal change if the rule is intended only for root temporary scripts:
+### Completed source tracking
 
-   ```gitignore
-   /_*.py
-   ```
-
-   - Verify after the change:
+1. Completed in `a7ea8df`: `.gitignore` narrows `_*.py` to `/_*.py`, and `project/backend/sidecar/__init__.py` is tracked.
+   - The root-only rule keeps temporary root scripts ignored without matching the sidecar package initializer.
+   - Confirm the tracked initializer is not ignored:
 
    ```bash
    git check-ignore -v project/backend/sidecar/__init__.py
@@ -296,21 +290,21 @@ Consequences:
 
    The command should print nothing.
 
-2. Deliberately add the untracked desktop source, tests, package lock, and documentation.
-   - Required desktop paths include `project/frontend/**`, `project/backend/**`, and `project/README.md`.
-   - Do not add ignored build outputs: `node_modules/`, `dist-*`, `release/`, `.app`, `.dmg`, `.blockmap`, or Python caches.
+### Future source maintenance
 
-3. Unify documentation.
-   - `README.md` has a basic desktop section but only explains `npm run build`.
-   - `README_EN.md` and `README_JA.md` do not document the desktop application.
-   - `CONTRIBUTING.md` does not describe desktop development, tests, or packaging.
-   - Document `npm ci`, `npm run verify`, `npm run dist:mac`, architecture-specific artifacts, unsigned/notarization limits, and Python 3.12 dependency.
+1. For future source changes, deliberately stage the desktop source, tests, package lock, and documentation.
+    - Relevant desktop paths include `project/frontend/**`, `project/backend/**`, and `project/README.md`.
+    - Keep ignored build outputs out of source delivery: `node_modules/`, `dist-*`, `release/`, `.app`, `.dmg`, `.blockmap`, and Python caches.
 
-4. Expand CI for actual release artifacts.
+2. Maintain existing desktop documentation.
+   - `README.md`, `project/README.md`, and `project/frontend/README.md` already provide desktop startup, verification, and packaging guidance.
+   - If broader documentation coverage is needed, mirror the verified workflow in `README_EN.md`, `README_JA.md`, and `CONTRIBUTING.md`.
+
+3. Expand CI for actual release artifacts.
    - Existing `desktop-quality` in `.github/workflows/ci.yml` runs `npm run package:mac`, which creates only an `.app` directory.
    - Add a separate controlled release workflow later for `npm run dist:mac`, artifact upload, SHA-256 output, architecture verification, signing, notarization, and tag/version checks.
 
-5. Add a release history document such as `CHANGELOG.md` before the first public release.
+4. Add a release history document such as `CHANGELOG.md` before the first public release.
 
 ### Recommended repository improvements
 
@@ -352,13 +346,17 @@ edict/docker-compose.yml
 
 These are development values, not verified production credentials. They must not be reused for real deployments. GitHub Actions references to `secrets.*` are normal secure references and do not expose secret values.
 
-## Recommended Next Conversation Prompt
+## Current Status and Recommended Next Steps
 
-Use this prompt in the next conversation:
+The current evidence supports an unsigned Phase 1 desktop baseline: the `a7ea8df` delivery commit exists, the branch is available on the `Logosss1/edict` fork, the arm64 Electron initial-screen/bridge/sidecar health-status flow has been browser-verified, and the arm64/x64 DMGs pass `hdiutil verify`. No PR creation or PR URL is recorded in this handover.
 
-```text
-Continue Edict Phase 1 from doc/EDICT_PHASE1_HANDOVER.md. Do not commit, push, or upload anything unless I explicitly request it. First inspect the current Git status and read the handover. Prioritize fixing the .gitignore rule that hides project/backend/sidecar/__init__.py, then make the desktop source reproducibly trackable. After that, implement the smallest safe improvements for Python runtime detection and Electron-to-sidecar startup readiness, with unit tests, JSONL interface tests, and a real Electron/browser verification if the local tooling is available. Preserve existing project structure and do not refactor unrelated legacy Web code.
-```
+The following items remain pending and are not described as completed:
+
+1. Complete real Electron acceptance for task submission through completion/failure, settings taking effect, filtering/search, responsive behavior, and keyboard interactions.
+2. Launch and exercise the x64 package on a real Intel Mac.
+3. Expand UI/IPC tests around task lifecycle, settings, filtering/search, responsive behavior, keyboard interactions, sidecar errors, and recovery.
+4. Decide whether the target Python 3.12 prerequisite should remain documented or be replaced by an embedded runtime/native sidecar.
+5. Decide whether the desktop app should integrate with the existing backend or continue with an independent local sidecar domain, including a persistence strategy.
 
 ## Reproducible Validation Checklist
 
@@ -369,7 +367,7 @@ Run from repository root unless a command changes directory.
 git status --short
 git diff --check
 
-# Verify the package initializer is not accidentally ignored after fixing .gitignore.
+# Confirm the tracked package initializer is not ignored.
 git check-ignore -v project/backend/sidecar/__init__.py
 
 # Install desktop dependencies from the lockfile and verify the implementation.
@@ -383,9 +381,9 @@ npm run package:mac
 npm run dist:mac
 
 # Verify DMG integrity and record checksums.
-hdiutil verify release/Edict-0.1.0-arm64.dmg
-hdiutil verify release/Edict-0.1.0.dmg
-shasum -a 256 release/Edict-0.1.0-arm64.dmg release/Edict-0.1.0.dmg
+hdiutil verify release/edict三省-0.1.0-arm64.dmg
+hdiutil verify release/edict三省-0.1.0.dmg
+shasum -a 256 release/edict三省-0.1.0-arm64.dmg release/edict三省-0.1.0.dmg
 
 # Run dependency review. These may need network access and can take time.
 npm audit --omit=dev
@@ -395,12 +393,3 @@ npm audit --audit-level=high
 cd ../..
 gitleaks detect --source . --no-git --redact
 ```
-
-## Explicit Non-Goals for the Immediate Next Step
-
-- Do not upload to GitHub.
-- Do not create commits unless explicitly requested.
-- Do not force-reset, discard, or overwrite existing user changes.
-- Do not auto-install third-party tools or Python runtimes without explicit user approval.
-- Do not add signing credentials, certificates, or secrets to the repository.
-- Do not refactor legacy Web dashboard or backend architecture while stabilizing the desktop Phase 1 baseline.

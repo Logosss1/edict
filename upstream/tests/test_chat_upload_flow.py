@@ -177,6 +177,37 @@ def test_http_attachment_only_speak_stages_files_and_survives_archive_restart(ap
     )[0] == 400
 
 
+def test_shared_session_stages_attachments_in_canonical_workspace_and_cleans_them(tmp_path, monkeypatch):
+    import json as json_module
+
+    from test_yushufang import make_service, room_from
+
+    canonical_home = tmp_path / "openclaw"
+    canonical_workspace = canonical_home / "workspace-alpha"
+    canonical_workspace.mkdir(parents=True)
+    (canonical_home / "openclaw.json").write_text(json_module.dumps({
+        "agents": {"list": [{"id": "alpha", "workspace": str(canonical_workspace)}]},
+    }), encoding="utf-8")
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(canonical_home / "openclaw.json"))
+    monkeypatch.setenv("EDICT_OPENCLAW_HOME", str(canonical_home))
+
+    service = make_service(tmp_path)
+    service.runtime_preparer = lambda *_args: ({
+        "agents": {"defaults": {"workspace": str(canonical_workspace)}},
+    }, {}, {"model": "test/mock", "levels": ["default", "low", "medium", "high", "max"]})
+    room = room_from(service.open_room("共享会话附件", ["alpha"]))
+    item = service.attachments.upload(room["id"], "proof.txt", b"CANONICAL_ATTACHMENT")
+
+    assert service.speak(room["id"], "请检查附件", attachment_ids=[item["id"]])["ok"]
+    assert service.wait_for_idle(room["id"], timeout=3)
+    staged = canonical_workspace / "attachments" / room["id"] / item["id"] / "source.txt"
+    assert staged.read_bytes() == b"CANONICAL_ATTACHMENT"
+    assert not (service.root_dir / "runtime" / room["id"] / "alpha" / "workspace" / "attachments").exists()
+
+    assert service.conclude(room["id"])["ok"]
+    assert not staged.exists()
+
+
 def test_cross_room_ids_and_draft_deletion(app):
     first = open_room(app)
     item = upload(app, first)

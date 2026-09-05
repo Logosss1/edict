@@ -20,6 +20,7 @@ describe('ensureRuntimeData', () => {
     await mkdir(join(sourceRoot, 'data'), { recursive: true })
     await writeFile(join(sourceRoot, 'docker', 'demo_data', 'tasks_source.json'), '[{"id":"demo"}]')
     await writeFile(join(sourceRoot, 'data', 'schema.json'), '{"version":1}')
+    const demoOpenClaw = JSON.stringify({ agents: { list: [{ id: 'taizi' }] } })
     for (const fileName of [
       'agent_config.json',
       'last_model_change_result.json',
@@ -30,13 +31,15 @@ describe('ensureRuntimeData', () => {
       'openclaw.json',
       'pending_model_changes.json',
     ]) {
-      await writeFile(join(sourceRoot, 'docker', 'demo_data', fileName), '{}')
+      await writeFile(join(sourceRoot, 'docker', 'demo_data', fileName), fileName === 'openclaw.json' ? demoOpenClaw : '{}')
     }
 
     const first = await ensureRuntimeData(sourceRoot, runtimeRoot)
     expect(first.seededFiles).toBe(11)
     expect(await readFile(join(first.dataDirectory, 'tasks_source.json'), 'utf8')).toContain('demo')
-    expect(await readFile(join(first.openclawHome, 'openclaw.json'), 'utf8')).toContain('"agents"')
+    const firstConfig = JSON.parse(await readFile(join(first.openclawHome, 'openclaw.json'), 'utf8'))
+    expect(firstConfig.tools.sessions.visibility).toBe('all')
+    expect(await readFile(join(first.openclawHome, 'workspace-taizi', 'AGENTS.md'), 'utf8')).toContain('接到任务先回复')
 
     await writeFile(join(first.dataDirectory, 'tasks_source.json'), '[{"id":"user"}]')
     const second = await ensureRuntimeData(sourceRoot, runtimeRoot)

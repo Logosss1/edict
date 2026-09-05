@@ -28,7 +28,14 @@ Edict_InnerCourt 是 EDICT 的桌面化改造版：保留“三省六部”的�
 - API 密钥只在保存时接收，密钥与普通供应商元数据分开保存，并通过 macOS 安全存储加密。
 - 源码、演示数据、构建产物和 GitHub Release 均不内置个人供应商信息或 API 密钥。
 
-### 3. 御书房改为严格的单场对话
+### 3. OpenClaw 派发渠道也收进软件
+
+- “派发渠道”现在替代原版需要在终端执行的 `openclaw channels list`、`openclaw channels add` 和首次安装渠道组件步骤，支持飞书、Telegram、Discord、Slack、Signal。
+- 可以在软件里创建命名账号、保存、检测、移除和重载；渠道 Token/Secret 与供应商密钥一样进入 macOS 安全存储，OpenClaw 配置文件只写环境变量引用。
+- 第一次保存时由软件自动安装对应的 OpenClaw 渠道组件，并明确提示是否需要重载看板。
+- 在外部平台创建机器人、开通权限和复制平台生成的凭据，仍需在平台网站或客户端完成；桌面软件不能替用户创建外部账号。
+
+### 4. 御书房改为严格的单场对话
 
 - 同一时间只能存在一场未结束的御书房议事。
 - 进行中的议事会阻止再次新建，避免多个上下文同时占用同一套内廷运行资源。
@@ -37,7 +44,7 @@ Edict_InnerCourt 是 EDICT 的桌面化改造版：保留“三省六部”的�
 - 新开的御书房会接入每个 Agent 的规范主会话 `agent:<agentId>:main`，同一个 Agent 在任务看板和御书房之间共享同一套工作记忆。
 - 御书房可以读取实时、只读的工作快照，也可以召见 Agent 汇报当前任务；不会创建第二个任务，也不会改变原任务。
 
-### 4. 所有主要历史记录都可控删除
+### 5. 所有主要历史记录都可控删除
 
 - 内廷密档：可删除已结束的御书房对话。
 - 朝堂议事：可删除已结束的议事记录；进行中的记录不能误删。
@@ -45,7 +52,7 @@ Edict_InnerCourt 是 EDICT 的桌面化改造版：保留“三省六部”的�
 - 奏折阁、任务详情和会话详情：对终态记录提供统一的删除入口。
 - 删除操作有确认提示；进行中的任务、会话和议事保留，避免删除仍在执行的状态。
 
-### 5. 附件、错误和运行安全
+### 6. 附件、错误和运行安全
 
 - 御书房、朝堂议事和普通会话共用文件选择、拖放、粘贴、上传重试和历史下载能力。
 - 附件按房间隔离，限制单文件、单消息和单房间大小。
@@ -61,7 +68,7 @@ Edict_InnerCourt 是 EDICT 的桌面化改造版：保留“三省六部”的�
     ↓
 设置：供应商地址 + API 密钥 + 模型
     ↓
-模型能力检查与 Agent 绑定
+模型能力检查、Agent 绑定；需要外部派发时再配置渠道
     ↓
 用户下旨
     ↓
@@ -92,15 +99,16 @@ Edict_InnerCourt 是 EDICT 的桌面化改造版：保留“三省六部”的�
 
 从 [Releases](https://github.com/Logosss1/Edict_InnerCourt/releases/latest) 下载：
 
-- `Edict_InnerCourt-0.2.0-arm64-mac.zip`：Apple Silicon（M 系列）。
-- `Edict_InnerCourt-0.2.0-mac.zip`：Intel。
+- `Edict_InnerCourt-0.2.1-arm64-mac.zip`：Apple Silicon（M 系列）。
+- `Edict_InnerCourt-0.2.1-mac.zip`：Intel。
 
 解压后打开 `Edict_InnerCourt.app`，进入设置：
 
 1. 填写供应商 Base URL。
 2. 填写 API Key；密钥只保存在本机安全存储，不会写进 GitHub 项目。
 3. 添加或发现模型，并为 Agent 选择模型。
-4. 检查运行时状态，再在需要时开启自动执行。
+4. 如果需要外部消息派发，在“派发渠道”中填写平台账号并保存，可直接检测连接。
+5. 检查运行时状态，再在需要时开启自动执行。
 
 当前 Release 未使用 Apple Developer 签名和公证。macOS 首次拦截时，Control-click 应用并选择“打开”；确认来源无误后再按系统提示允许运行。
 

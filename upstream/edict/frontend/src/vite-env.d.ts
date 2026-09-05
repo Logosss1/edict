@@ -31,6 +31,30 @@ interface EdictDesktopProviderTestResult {
   error?: string
 }
 
+interface EdictDesktopChannelSummary {
+  channel: string
+  accountId: string
+  label: string
+  name?: string
+  enabled: boolean
+  configured: boolean
+  pluginInstalled: boolean
+  appId?: string
+  domain?: string
+  secretFields: Record<string, boolean>
+}
+
+interface EdictDesktopChannelListResult {
+  ok: boolean
+  channels: EdictDesktopChannelSummary[]
+}
+
+interface EdictDesktopChannelProbeResult {
+  ok: boolean
+  message: string
+  raw?: unknown
+}
+
 interface Window {
   edictDesktop?: {
     listProviders: () => Promise<EdictDesktopProviderSummary[]>
@@ -38,6 +62,11 @@ interface Window {
       integration?: { ok?: boolean; error?: string }
     }>
     testProvider: (payload: EdictDesktopProviderPayload) => Promise<EdictDesktopProviderTestResult>
+    listChannelAccounts?: () => Promise<EdictDesktopChannelListResult>
+    saveChannelAccount?: (payload: Record<string, unknown>) => Promise<{ ok: boolean; requiresReload?: boolean; account?: EdictDesktopChannelSummary; error?: string }>
+    removeChannelAccount?: (payload: { channel: string; accountId: string }) => Promise<{ ok: boolean; requiresReload?: boolean }>
+    probeChannelAccount?: (payload: { channel: string; accountId: string }) => Promise<EdictDesktopChannelProbeResult>
+    reloadDashboard?: () => Promise<unknown>
     openSettings?: (tab?: string) => Promise<unknown>
   }
 }

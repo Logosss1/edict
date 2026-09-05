@@ -28,7 +28,14 @@ The project keeps EDICT's original organization: the user issues a decree, the C
 - Accepts the API key only when saving; secrets are stored separately from ordinary provider metadata and protected by macOS secure storage.
 - Personal provider details and API keys are not included in the source, demo data, build output, or GitHub Releases.
 
-### 3. A strict single-room Inner Court
+### 3. OpenClaw channel setup inside the app
+
+- The **Dispatch Channel** section now replaces the upstream terminal steps `openclaw channels list`, `openclaw channels add`, and first-use channel plugin installation for Feishu, Telegram, Discord, Slack, and Signal.
+- Channel accounts can be created, named, checked, removed, and reloaded from the desktop UI. Tokens and secrets use the same macOS secure store as provider keys; OpenClaw JSON receives only environment SecretRefs.
+- The app installs the supported OpenClaw channel plugin on first save and reports whether the account is configured or needs a dashboard reload.
+- Creating the external platform account, granting its permissions, and copying the platform-issued credentials are still performed on the platform's own website or app; no desktop app can do that on the user's behalf.
+
+### 4. A strict single-room Inner Court
 
 - Only one unfinished Inner Court discussion can exist at a time.
 - An active discussion prevents another one from being created, avoiding competing contexts and shared runtime resources.
@@ -37,7 +44,7 @@ The project keeps EDICT's original organization: the user issues a decree, the C
 - New rooms attach to each Agent's canonical `agent:<agentId>:main` session, so the same Agent keeps one working memory across the task board and Inner Court.
 - Inner Court can read a live, read-only progress snapshot and summon an Agent for a current-task report without creating a second task or changing the original work.
 
-### 4. Deletion for major history records
+### 5. Deletion for major history records
 
 - Inner Court archives: delete finished Inner Court discussions.
 - Court Discussions: delete finished multi-agent discussion records; active records cannot be removed accidentally.
@@ -45,7 +52,7 @@ The project keeps EDICT's original organization: the user issues a decree, the C
 - Memorials, task details, and session details: provide a consistent delete action for terminal records.
 - Every delete action asks for confirmation. Active tasks, sessions, and discussions remain protected.
 
-### 5. Attachment, error, and runtime safety
+### 6. Attachment, error, and runtime safety
 
 - Inner Court, Court Discussions, and ordinary sessions share file selection, drag-and-drop, paste, upload retry, and history download support.
 - Attachments are isolated by room, with per-file, per-message, and per-room size limits.
@@ -61,7 +68,7 @@ First launch in safe mode
         ↓
 Settings: provider endpoint + API key + model
         ↓
-Check model capabilities and bind agents
+Check model capabilities, bind agents, and configure a dispatch channel when needed
         ↓
 Issue a decree
         ↓
@@ -92,15 +99,16 @@ Finished: show a delete action and remove the record plus its dedicated attachme
 
 Download from [Releases](https://github.com/Logosss1/Edict_InnerCourt/releases/latest):
 
-- `Edict_InnerCourt-0.2.0-arm64-mac.zip`: Apple Silicon Macs (M-series).
-- `Edict_InnerCourt-0.2.0-mac.zip`: Intel Macs.
+- `Edict_InnerCourt-0.2.1-arm64-mac.zip`: Apple Silicon Macs (M-series).
+- `Edict_InnerCourt-0.2.1-mac.zip`: Intel Macs.
 
 Extract the ZIP, open `Edict_InnerCourt.app`, and go to **Settings**:
 
 1. Enter your provider Base URL.
 2. Enter your API key. It is stored in the local secure store and is not written into the GitHub project.
 3. Add or discover models, then choose a model for each agent.
-4. Check runtime readiness and enable automatic execution only when needed.
+4. In **Dispatch Channel**, enter a platform account, save it, and run the connection check if you need external message dispatch.
+5. Check runtime readiness and enable automatic execution only when needed.
 
 The current Release is not signed or notarized with an Apple Developer certificate. If macOS blocks it on first launch, Control-click the app and choose **Open**, then follow the system prompt after verifying the Release source.
 

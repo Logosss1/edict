@@ -576,6 +576,40 @@ body {
 .mc-profile-status.pending { border: 1px solid #6a9eff55; background: #0a1228; color: var(--acc); }
 .mc-profile-empty { margin-top: 14px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 7px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
+/* ══ OpenClaw channel setup ══ */
+.mc-channel { margin: 18px 0; padding: 20px; background: var(--panel); border: 1px solid #2ecc8a55; border-radius: 12px; box-shadow: 0 8px 28px rgba(0,0,0,.14); }
+.mc-channel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.mc-channel-head h2 { margin: 0; font-size: 19px; line-height: 1.3; }
+.mc-channel-head p { max-width: 64ch; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.mc-channel-badge { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; padding: 6px 9px; border-radius: 999px; font-size: 10px; font-weight: 700; }
+.mc-channel-badge.ready { border: 1px solid #2ecc8a66; background: #0a2018; color: var(--ok); }
+.mc-channel-badge.muted { border: 1px solid var(--line); background: var(--panel2); color: var(--muted); }
+.mc-channel-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-top: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.mc-channel-toolbar .mc-profile-field { width: min(360px, 100%); }
+.mc-channel-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.mc-channel-plugin { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 10px; }
+.mc-channel-plugin.installed { color: var(--ok); }
+.mc-channel-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+.mtext { width: 100%; min-height: 34px; box-sizing: border-box; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; outline: none; background: var(--panel2); color: var(--text); font: inherit; font-size: 12px; }
+.mtext::placeholder { color: #7d89a3; }
+.mtext:focus { border-color: var(--acc); box-shadow: 0 0 0 2px #6a9eff1f; }
+.mc-channel-help { display: flex; align-items: flex-start; gap: 6px; margin-top: 14px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.mc-channel-help svg { flex: 0 0 auto; margin-top: 1px; color: var(--ok); }
+.mc-channel-help.secondary { margin-top: 5px; padding-left: 20px; color: #9aa6bf; }
+.mc-channel-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.mc-channel-actions .btn, .mc-channel-toolbar-actions .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.mc-channel .mc-profile-status { display: flex; align-items: flex-start; gap: 6px; }
+@media (max-width: 700px) {
+  .mc-channel { padding: 16px; }
+  .mc-channel-head { flex-direction: column; gap: 12px; }
+  .mc-channel-toolbar { align-items: stretch; flex-direction: column; }
+  .mc-channel-toolbar .mc-profile-field { width: 100%; }
+  .mc-channel-toolbar-actions { justify-content: flex-start; }
+  .mc-channel-form { grid-template-columns: 1fr; }
+  .mc-channel-actions { align-items: stretch; flex-direction: column; }
+  .mc-channel-actions .btn { width: 100%; }
+}
+
 /* ══ Advanced per-agent override ══ */
 .mc-advanced { margin-bottom: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
 .mc-advanced-summary { display: flex; align-items: center; gap: 10px; padding: 13px 16px; background: var(--panel2); color: var(--text); cursor: pointer; list-style: none; user-select: none; }

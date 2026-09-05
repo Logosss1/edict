@@ -122,6 +122,62 @@ test('full settings uses the dashboard dark theme and editable provider fields',
   expect(errors).toEqual([])
 })
 
+test('桌面版可在软件内配置 OpenClaw 派发渠道', async ({ page }) => {
+  const errors = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.addInitScript(() => {
+    window.channelCalls = []
+    window.edictDesktop = {
+      listProviders: async () => [],
+      getDiagnostics: async () => ({ startupState: 'ready', runtimeOptions: {} }),
+      getOpenClawSnapshot: async () => ({ agents: [], mcpServers: [], network: {} }),
+      getAgentBindings: async () => ({ agents: [] }),
+      listChannelAccounts: async () => ({ ok: true, channels: [{
+        channel: 'feishu', accountId: 'default', label: '飞书 Feishu', enabled: false,
+        configured: false, pluginInstalled: false, secretFields: {},
+      }] }),
+      saveChannelAccount: async payload => {
+        window.channelCalls.push({ kind: 'save', payload })
+        return { ok: true, requiresReload: true, account: {
+          channel: 'feishu', accountId: payload.accountId, label: '飞书 Feishu', enabled: true,
+          configured: true, pluginInstalled: true, secretFields: { appSecret: true },
+        } }
+      },
+      probeChannelAccount: async payload => {
+        window.channelCalls.push({ kind: 'probe', payload })
+        return { ok: true, message: '渠道连接检测通过' }
+      },
+      removeChannelAccount: async payload => {
+        window.channelCalls.push({ kind: 'remove', payload })
+        return { ok: true, requiresReload: true }
+      },
+      reloadDashboard: async () => { window.channelCalls.push({ kind: 'reload' }) },
+    }
+  })
+  await page.route('**/api/agent-config', route => route.fulfill({ json: {
+    dispatchChannel: 'feishu',
+    agents: [{ id: 'zhongshu', label: '中书令', role: '中书省', model: 'fixture/model', thinkingDefault: 'default' }],
+  } }))
+  await page.route('**/api/model-change-log', route => route.fulfill({ json: [] }))
+  await page.route('**/api/set-dispatch-channel', route => route.fulfill({ json: { ok: true } }))
+  await page.goto('/')
+  await page.getByRole('tab', { name: '模型配置', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '派发渠道', exact: true })).toBeVisible()
+  await page.getByLabel('账号标识').fill('ops')
+  await page.getByLabel('App ID').fill('cli_fixture')
+  await page.getByLabel('App Secret').fill('fixture-channel-secret')
+  await page.getByRole('button', { name: '保存并启用', exact: true }).click()
+  await expect(page.getByText(/渠道已保存并设为自动派发渠道/)).toBeVisible()
+  await expect(page.getByRole('button', { name: '立即重载看板', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '检测连接', exact: true }).click()
+  await expect(page.getByText('渠道连接检测通过', { exact: true })).toBeVisible()
+  const calls = await page.evaluate(() => window.channelCalls)
+  expect(calls[0].kind).toBe('save')
+  expect(calls[0].payload).toMatchObject({ channel: 'feishu', accountId: 'ops', appId: 'cli_fixture', appSecret: 'fixture-channel-secret' })
+  expect(calls[1]).toMatchObject({ kind: 'probe', payload: { channel: 'feishu', accountId: 'ops' } })
+  expect(errors).toEqual([])
+})
+
 test('runtime repair settings show actionable failure and retain editable paths', async ({ page }) => {
   await page.addInitScript(() => {
     window.edictDesktop = {

@@ -1,6 +1,6 @@
 {
   "name": "edict-innercourt",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Edict_InnerCourt 三省六部与御书房",
   "private": true,
   "type": "module",

@@ -4,16 +4,7 @@ import { useStore } from '../store';
 import { api } from '../api';
 import ProviderModelManager, { type ManagedProvider } from './ProviderModelManager';
 import ThinkingControl, { CapabilityTools, useModelCapabilities } from './ThinkingControl';
-
-const CHANNELS = [
-  { id: 'feishu', label: '飞书 Feishu' },
-  { id: 'telegram', label: 'Telegram' },
-  { id: 'wecom', label: '企业微信 WeCom' },
-  { id: 'discord', label: 'Discord' },
-  { id: 'slack', label: 'Slack' },
-  { id: 'signal', label: 'Signal' },
-  { id: 'tui', label: 'TUI (终端)' },
-];
+import ChannelConfig from './ChannelConfig';
 
 function openClawProviderId(value: string): string {
   let id = value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -30,8 +21,6 @@ export default function ModelConfig() {
 
   const [selMap, setSelMap] = useState<Record<string, string>>({});
   const [statusMap, setStatusMap] = useState<Record<string, { cls: string; text: string }>>({});
-  const [channelSel, setChannelSel] = useState('feishu');
-  const [channelStatus, setChannelStatus] = useState('');
   const [managedProviders, setManagedProviders] = useState<ManagedProvider[]>([]);
   const [profileProviderId, setProfileProviderId] = useState('');
   const [profileModel, setProfileModel] = useState('');
@@ -57,9 +46,6 @@ export default function ModelConfig() {
         m[ag.id] = '';
       });
       setSelMap(m);
-    }
-    if (agentConfig?.dispatchChannel) {
-      setChannelSel(agentConfig.dispatchChannel);
     }
   }, [agentConfig]);
 
@@ -300,29 +286,7 @@ export default function ModelConfig() {
         </div>
       </details>
 
-      {/* Dispatch Channel 配置 */}
-      <div style={{ marginTop: 24, marginBottom: 8 }}>
-        <div className="sec-title">派发渠道</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0' }}>
-          <select className="msel" value={channelSel} onChange={(e) => setChannelSel(e.target.value)}
-            style={{ maxWidth: 220 }}>
-            {CHANNELS.map((ch) => (
-              <option key={ch.id} value={ch.id}>{ch.label}</option>
-            ))}
-          </select>
-          <button className="btn btn-p" disabled={channelSel === (agentConfig?.dispatchChannel || 'feishu')}
-            onClick={async () => {
-              try {
-                const r = await api.setDispatchChannel(channelSel);
-                if (r.ok) { setChannelStatus('✅ 已保存'); toast('派发渠道已切换', 'ok'); loadAgentConfig(); }
-                else setChannelStatus('❌ ' + (r.error || '失败'));
-              } catch { setChannelStatus('❌ 无法连接'); }
-              setTimeout(() => setChannelStatus(''), 3000);
-            }}>应用</button>
-          {channelStatus && <span style={{ fontSize: 12, color: channelStatus.startsWith('✅') ? 'var(--success)' : 'var(--danger)' }}>{channelStatus}</span>}
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--muted)' }}>自动派发时使用的 OpenClaw 通知渠道（需已在 openclaw.json 中配置对应 channel）</div>
-      </div>
+      <ChannelConfig initialChannel={agentConfig.dispatchChannel} onDispatchSaved={() => void loadAgentConfig()} toast={toast} />
 
       {/* Change Log */}
       <div style={{ marginTop: 24 }}>

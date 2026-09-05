@@ -27,7 +27,26 @@ import {
   removeProviderFromOpenClaw,
   setAgentModel,
   syncProviderToOpenClaw,
+  writeOpenClawConfig,
 } from '../main/integration/openclaw-config.js'
+import {
+  applyChannelAccountConfig,
+  channelSecretRef,
+  DESKTOP_CHANNELS,
+  getChannelAccountConfig,
+  getChannelSpec,
+  makeChannelSecretRef,
+  normalizeChannelAccountDraft,
+  normalizeChannelAccountId,
+  normalizeChannelId,
+  removeChannelAccountConfig,
+  secretInput,
+  secretRefId,
+  validateRequiredChannelFields,
+  type ChannelAccountDraft,
+  type ChannelSecretRefs,
+  type DesktopChannelId,
+} from '../main/integration/channel-config.js'
 import {
   createOpenClawConfigStore,
   type AgentPatch,
@@ -79,6 +98,7 @@ const startupTimings: {
 } = { processStartedAt: new Date(processStartedAt).toISOString() }
 let restarting = false
 let providerEnvironment: Record<string, string> = {}
+let channelEnvironment: Record<string, string> = {}
 let dashboardReloadRequired = false
 let runtimePaths: RuntimePaths = { openclawPath: '', nodePath: '' }
 let runtimeDependencies = discoverConfiguredRuntime()
@@ -280,6 +300,7 @@ function runtimeEnvironment(upstream: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
     ...providerEnvironment,
+    ...channelEnvironment,
     PATH: runtimeDependencies.path,
     OPENCLAW_BIN: runtimeDependencies.openclawPath,
     EDICT_NODE_BIN: runtimeDependencies.nodePath,
@@ -431,6 +452,257 @@ async function refreshProviderEnvironment(): Promise<void> {
   }
 }
 
+interface OpenClawCommandResult {
+  code: number
+  stdout: string
+  stderr: string
+}
+
+interface ChannelAccountSummary {
+  channel: DesktopChannelId
+  accountId: string
+  label: string
+  name?: string
+  enabled: boolean
+  configured: boolean
+  pluginInstalled: boolean
+  appId?: string
+  domain?: string
+  secretFields: Record<string, boolean>
+}
+
+const CHANNEL_COMMAND_TIMEOUT_MS = 90_000
+
+function asObject(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function redactedChannelCommandError(value: string): string {
+  return redactAgentConfigSyncOutput(value || 'OpenClaw 渠道命令失败', runtimeEnvironment(upstreamDirectory()))
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(-1_200)
+}
+
+async function runOpenClawCommand(args: string[], timeoutMs = CHANNEL_COMMAND_TIMEOUT_MS): Promise<OpenClawCommandResult> {
+  const binary = runtimeDependencies.openclawPath || 'openclaw'
+  const environment = runtimeEnvironment(upstreamDirectory())
+  return new Promise((resolve) => {
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    const child = spawn(binary, args, {
+      cwd: upstreamDirectory(),
+      env: environment,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const finish = (result: OpenClawCommandResult) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM')
+      finish({ code: 124, stdout, stderr: `${stderr}\nOpenClaw 渠道命令超时` })
+    }, timeoutMs)
+    timer.unref()
+    child.stdout.on('data', (data) => {
+      stdout += String(data)
+      if (stdout.length > 100_000) stdout = stdout.slice(-100_000)
+    })
+    child.stderr.on('data', (data) => {
+      stderr += String(data)
+      if (stderr.length > 100_000) stderr = stderr.slice(-100_000)
+    })
+    child.once('error', (error) => finish({ code: 1, stdout, stderr: String(error) }))
+    child.once('close', (code) => finish({ code: code ?? 1, stdout, stderr }))
+  })
+}
+
+async function installedChannelMap(): Promise<Record<string, boolean>> {
+  const result = await runOpenClawCommand(['channels', 'list', '--all', '--json'], 20_000)
+  if (result.code !== 0) return {}
+  try {
+    const parsed = asObject(JSON.parse(result.stdout))
+    const chat = asObject(parsed.chat)
+    return Object.fromEntries(Object.entries(chat).map(([id, value]) => [id, asObject(value).installed === true]))
+  } catch {
+    return {}
+  }
+}
+
+async function ensureChannelPlugin(channel: DesktopChannelId): Promise<void> {
+  const installed = await installedChannelMap()
+  if (installed[channel]) return
+  const spec = getChannelSpec(channel)
+  const result = await runOpenClawCommand(['plugins', 'install', `npm:${spec.npmSpec}`, '--pin'], 120_000)
+  if (result.code !== 0) {
+    throw new Error(`${spec.label} 渠道组件安装失败：${redactedChannelCommandError(result.stderr || result.stdout)}`)
+  }
+}
+
+async function channelSecretValue(
+  channel: DesktopChannelId,
+  accountId: string,
+  field: string,
+  configuredValue: unknown,
+): Promise<string | undefined> {
+  const configuredRef = secretRefId(configuredValue)
+  if (configuredRef && process.env[configuredRef]?.trim()) return process.env[configuredRef]!.trim()
+  const candidates = [channelSecretRef(channel, accountId, field)]
+  if (accountId !== 'default') candidates.push(channelSecretRef(channel, 'default', field))
+  for (const ref of candidates) {
+    const secret = await providerStore.getCredential(ref)
+    if (secret?.trim()) return secret.trim()
+  }
+  if (typeof configuredValue === 'string' && configuredValue.trim()) return configuredValue.trim()
+  return undefined
+}
+
+async function refreshChannelEnvironment(): Promise<void> {
+  const next: Record<string, string> = {}
+  try {
+    const config = await readOpenClawConfig(effectiveOpenClawConfigPath())
+    for (const spec of DESKTOP_CHANNELS) {
+      const channel = spec.id as DesktopChannelId
+      const section = asObject(asObject(config.channels)[channel])
+      const accountIds = new Set<string>(['default'])
+      for (const accountId of Object.keys(asObject(section.accounts))) accountIds.add(normalizeChannelAccountId(accountId))
+      for (const accountId of accountIds) {
+        const account = getChannelAccountConfig(config, channel, accountId)
+        for (const field of spec.secretFields) {
+          const value = account[field]
+          const refId = secretRefId(value)
+          if (!refId) continue
+          const secret = await channelSecretValue(channel, accountId, field, value)
+          if (secret) next[refId] = secret
+        }
+      }
+    }
+  } catch (error) {
+    console.warn(`[edict] channel environment unavailable: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  channelEnvironment = next
+}
+
+function channelAccountIds(config: Awaited<ReturnType<typeof readOpenClawConfig>>, channel: DesktopChannelId): string[] {
+  const section = asObject(asObject(config.channels)[channel])
+  return ['default', ...Object.keys(asObject(section.accounts))]
+    .map(normalizeChannelAccountId)
+    .filter((value, index, all) => all.indexOf(value) === index)
+}
+
+async function listChannelAccounts(): Promise<{ ok: true; channels: ChannelAccountSummary[] }> {
+  const config = await readOpenClawConfig(effectiveOpenClawConfigPath())
+  const installed = await installedChannelMap()
+  const channels: ChannelAccountSummary[] = []
+  for (const spec of DESKTOP_CHANNELS) {
+    const channel = spec.id as DesktopChannelId
+    for (const accountId of channelAccountIds(config, channel)) {
+      const account = getChannelAccountConfig(config, channel, accountId)
+      const secretFields: Record<string, boolean> = {}
+      for (const field of spec.secretFields) {
+        secretFields[field] = Boolean(await channelSecretValue(channel, accountId, field, account[field]))
+      }
+      const configured = spec.requiredFields.every((field) => {
+        if (spec.secretFields.includes(field as never)) return secretFields[field]
+        return typeof account[field] === 'string' && Boolean(String(account[field]).trim())
+      })
+      channels.push({
+        channel,
+        accountId,
+        label: spec.label,
+        ...(typeof account.name === 'string' && account.name.trim() ? { name: account.name.trim() } : {}),
+        enabled: account.enabled !== false,
+        configured,
+        pluginInstalled: installed[channel] === true,
+        ...(typeof account.appId === 'string' ? { appId: account.appId } : {}),
+        ...(typeof account.domain === 'string' ? { domain: account.domain } : {}),
+        secretFields,
+      })
+    }
+  }
+  return { ok: true, channels }
+}
+
+async function prepareChannelSecretRefs(
+  config: Awaited<ReturnType<typeof readOpenClawConfig>>,
+  draft: ChannelAccountDraft,
+): Promise<{ refs: ChannelSecretRefs; storedSecrets: Record<string, boolean> }> {
+  const accountId = normalizeChannelAccountId(draft.accountId)
+  const account = getChannelAccountConfig(config, draft.channel, accountId)
+  const refs: ChannelSecretRefs = {}
+  const storedSecrets: Record<string, boolean> = {}
+  for (const field of getChannelSpec(draft.channel).secretFields) {
+    const draftField = draft.channel === 'discord' && field === 'token' ? draft.botToken : draft[field as keyof ChannelAccountDraft] as string | undefined
+    const existingValue = secretInput(account, field)
+    const secret = draftField?.trim() || await channelSecretValue(draft.channel, accountId, field, existingValue)
+    if (!secret) continue
+    const ref = makeChannelSecretRef(draft.channel, accountId, field)
+    await providerStore.setCredential(channelSecretRef(draft.channel, accountId, field), secret)
+    refs[field] = ref
+    storedSecrets[field] = true
+  }
+  return { refs, storedSecrets }
+}
+
+async function saveChannelAccount(payload: unknown): Promise<{ ok: true; requiresReload: true; account: ChannelAccountSummary }> {
+  const draft = normalizeChannelAccountDraft(payload)
+  await ensureChannelPlugin(draft.channel)
+  const current = await readOpenClawConfig(effectiveOpenClawConfigPath())
+  const accountId = normalizeChannelAccountId(draft.accountId)
+  const currentAccount = getChannelAccountConfig(current, draft.channel, accountId)
+  const { refs, storedSecrets } = await prepareChannelSecretRefs(current, draft)
+  validateRequiredChannelFields(draft, currentAccount, storedSecrets)
+  const next = applyChannelAccountConfig(current, draft, refs)
+  await writeOpenClawConfig(effectiveOpenClawConfigPath(), next)
+  await refreshChannelEnvironment()
+  dashboardReloadRequired = true
+  const listed = await listChannelAccounts()
+  const account = listed.channels.find((entry) => entry.channel === draft.channel && entry.accountId === accountId)
+  if (!account) throw new Error('渠道配置已保存，但未能读取保存后的状态')
+  return { ok: true, requiresReload: true, account }
+}
+
+async function removeChannelAccount(payload: unknown): Promise<{ ok: true; requiresReload: true }> {
+  if (!asObject(payload).channel) throw new Error('渠道不能为空')
+  const channel = normalizeChannelId(asObject(payload).channel)
+  const accountId = normalizeChannelAccountId(asObject(payload).accountId)
+  const current = await readOpenClawConfig(effectiveOpenClawConfigPath())
+  for (const field of getChannelSpec(channel).secretFields) {
+    await providerStore.deleteCredential(channelSecretRef(channel, accountId, field))
+  }
+  const next = removeChannelAccountConfig(current, channel, accountId)
+  await writeOpenClawConfig(effectiveOpenClawConfigPath(), next)
+  await refreshChannelEnvironment()
+  dashboardReloadRequired = true
+  return { ok: true, requiresReload: true }
+}
+
+async function probeChannelAccount(payload: unknown): Promise<{ ok: boolean; message: string; raw?: unknown }> {
+  const channel = normalizeChannelId(asObject(payload).channel)
+  const result = await runOpenClawCommand(['channels', 'status', '--channel', channel, '--probe', '--timeout', '12_000', '--json'], 30_000)
+  if (result.code !== 0) return { ok: false, message: redactedChannelCommandError(result.stderr || result.stdout) }
+  try {
+    const parsed = asObject(JSON.parse(result.stdout))
+    const records = Array.isArray(parsed.channels) ? parsed.channels : []
+    const accountId = normalizeChannelAccountId(asObject(payload).accountId)
+    const match = records.find((entry) => asObject(entry).accountId === accountId)
+    const probe = asObject(asObject(match).probe)
+    const healthy = match ? asObject(match).configured !== false && asObject(match).enabled !== false && probe.ok !== false : false
+    return {
+      ok: healthy,
+      message: healthy ? '渠道连接检测通过' : '渠道已写入，但 OpenClaw 尚未确认连接，请检查平台权限和账号状态。',
+      raw: { configured: asObject(match).configured, enabled: asObject(match).enabled, probe: { ok: probe.ok, status: probe.status } },
+    }
+  } catch {
+    return { ok: true, message: '渠道配置已读取；OpenClaw 未返回结构化检测结果。' }
+  }
+}
+
 async function stopDashboard(): Promise<void> {
   const child = dashboardProcess
   if (!child) return
@@ -454,6 +726,7 @@ async function restartDashboard(): Promise<void> {
   try {
     await stopDashboard()
     await refreshProviderEnvironment()
+    await refreshChannelEnvironment()
     await startDashboard()
     markStartup('ready')
     dashboardReloadRequired = false
@@ -602,6 +875,7 @@ function diagnostics() {
     openclawConfig: effectiveOpenClawConfigPath(),
     seededFiles: runtimeData?.seededFiles ?? 0,
     providerEnvironmentCount: Object.keys(providerEnvironment).length,
+    channelEnvironmentCount: Object.keys(channelEnvironment).length,
     dashboardReloadRequired,
     gatewayRestartEnabled: runtimeOptions.allowGatewayRestart,
     autoDispatchEnabled: runtimeOptions.autoDispatch,
@@ -832,6 +1106,10 @@ function registerIpc(): void {
     await restartDashboard()
     return diagnostics()
   })
+  ipcMain.handle('openclaw:channels-list', () => listChannelAccounts())
+  ipcMain.handle('openclaw:channel-save', (_event, payload: unknown) => saveChannelAccount(payload))
+  ipcMain.handle('openclaw:channel-remove', (_event, payload: unknown) => removeChannelAccount(payload))
+  ipcMain.handle('openclaw:channel-probe', (_event, payload: unknown) => probeChannelAccount(payload))
   ipcMain.handle('app:set-runtime-options', async (_event, payload: unknown) => {
     const input = payload as { autoDispatch?: boolean; allowGatewayRestart?: boolean }
     if (typeof input.autoDispatch === 'boolean') runtimeOptions.autoDispatch = input.autoDispatch
@@ -935,6 +1213,7 @@ async function boot(): Promise<void> {
     await repairModelCapabilities(effectiveOpenClawConfigPath())
     startupTimings.runtimeDataMs = Date.now() - runtimeStartedAt
     await refreshProviderEnvironment()
+    await refreshChannelEnvironment()
     await syncAgentConfig()
     await startDashboard()
     markStartup('ready')

@@ -80,15 +80,17 @@ function toUiSummary(provider: ProviderSummary): UiProviderSummary {
  */
 export class ProviderStore {
   private readonly core: CoreProviderStore
+  private readonly secrets: EncryptedFileSecretStore
 
   constructor(userDataDirectory: string) {
     const settingsDirectory = join(userDataDirectory, 'edict')
+    this.secrets = new EncryptedFileSecretStore(
+      join(settingsDirectory, 'credentials.json'),
+      new ElectronSafeStorageCipher(safeStorage),
+    )
     this.core = new CoreProviderStore({
       metadataPath: join(settingsDirectory, 'providers.json'),
-      secretStore: new EncryptedFileSecretStore(
-        join(settingsDirectory, 'credentials.json'),
-        new ElectronSafeStorageCipher(safeStorage),
-      ),
+      secretStore: this.secrets,
     })
   }
 
@@ -108,6 +110,18 @@ export class ProviderStore {
 
   getSecret(providerId: string): Promise<string | undefined> {
     return this.core.getApiKey(providerId)
+  }
+
+  getCredential(ref: string): Promise<string | undefined> {
+    return this.secrets.get(ref)
+  }
+
+  setCredential(ref: string, value: string): Promise<void> {
+    return this.secrets.set(ref, value)
+  }
+
+  deleteCredential(ref: string): Promise<void> {
+    return this.secrets.delete(ref)
   }
 }
 

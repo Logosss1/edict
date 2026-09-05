@@ -36,5 +36,9 @@ contextBridge.exposeInMainWorld('edictDesktop', {
   reloadMcp: () => ipcRenderer.invoke('openclaw:mcp-reload'),
   probeMcp: (name: string) => ipcRenderer.invoke('openclaw:mcp-probe', name),
   dashboardApi: (payload: unknown) => ipcRenderer.invoke('dashboard:api', payload),
+  listChannelAccounts: () => ipcRenderer.invoke('openclaw:channels-list'),
+  saveChannelAccount: (payload: unknown) => ipcRenderer.invoke('openclaw:channel-save', payload),
+  removeChannelAccount: (payload: unknown) => ipcRenderer.invoke('openclaw:channel-remove', payload),
+  probeChannelAccount: (payload: unknown) => ipcRenderer.invoke('openclaw:channel-probe', payload),
   getObservability: (options?: unknown) => ipcRenderer.invoke('dashboard:observability', options),
 })

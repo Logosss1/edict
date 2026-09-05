@@ -9,5 +9,3 @@ The Three Departments and Six Ministries workflow is the core design of EDICT. E
 ## Runtime and third-party components
 
 The macOS application bundles Node.js, Python, OpenClaw, Electron, and other third-party components. Those components remain subject to their own licenses. The packaging process collects runtime license files under the generated application resources; users should review those notices when redistributing a build.
-
-Do not add personal provider configuration, API keys, OpenClaw user data, runtime logs, or other private data to this repository or to a Release asset.

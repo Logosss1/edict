@@ -1,30 +1,33 @@
-# Edict_InnerCourt 0.2.0
+# Edict_InnerCourt Release Notes
 
-## 安装包
+Release descriptions are maintained in English on the [GitHub Releases page](https://github.com/Logosss1/Edict_InnerCourt/releases). Each version keeps its own installation packages; later releases do not overwrite earlier ones.
 
-- `Edict_InnerCourt-0.2.0-arm64-mac.zip`：Apple Silicon。
-- `Edict_InnerCourt-0.2.0-mac.zip`：Intel。
+## 0.2.1
 
-安装包内置 Node、Python 和 OpenClaw 运行时。新电脑解压并打开应用后，只需在设置页配置自己的供应商地址、API Key 和模型。安装包未签名、未公证，首次启动需要按 macOS 的“打开/仍要打开”提示操作。
+- Move core OpenClaw setup into the desktop app: bundled runtime, Agent/workspace defaults, shared-session visibility, and first-run data initialization.
+- Add in-app Dispatch Channel configuration for Feishu, Telegram, Discord, Slack, and Signal.
+- Install supported channel plugins on first save; support named accounts, connection probing, removal, reload, and secure local credential storage.
+- Preserve the single active Inner Court, shared Agent memory, terminal-record deletion, attachment isolation, and runtime diagnostics.
+- Keep provider credentials and personal configuration out of source files, packaged assets, and Release artifacts.
 
-## 本版重点
+## 0.2.0
 
-- 御书房同一时间只允许一场未结束的议事。
-- 新开的御书房绑定 Agent 的规范主会话 `agent:<agentId>:main`，同一个 Agent 在任务看板和御书房之间共享工作记忆。
-- 御书房新增实时工作状态面板，可读取当前任务、最近活动、来源任务和阻塞信息。
-- 支持只读“询问进度”：正在执行的 Agent 会排队，重复点击会合并为同一请求，不会创建新任务或修改原任务。
-- 增加首次配置就绪检查：运行依赖、供应商、密钥、模型目录和 Agent 绑定状态会明确显示下一步。
-- 修复取消竞态：只有真正创建运行进程后才标记为当前回奏，避免取消时出现无法停止的假运行状态。
-- 内廷密档、朝堂议事、旨意看板、奏折阁和详情页均支持删除终态记录。
-- 共享御书房运行时不会清理 Agent 原工作区的 Skills；命令执行、文件写入和任务派发仍在议事期间禁用。
+- Enforce a single unfinished Inner Court discussion at a time.
+- Reuse each Agent's canonical main session so task-board work and Inner Court conversations share working memory.
+- Add live work status and read-only progress requests for running Agents.
+- Add first-run readiness checks for runtime dependencies, provider credentials, model discovery, and Agent bindings.
+- Add deletion controls for terminal records across Inner Court, Court Discussions, tasks, memorials, sessions, and detail pages.
+- Improve cancellation handling, failure recovery, attachment cleanup, and shared-session safety.
 
-## 验证结果
+## 0.1.5
 
-- Python：240 passed，1 skipped。
-- Desktop/Vitest：39 passed。
-- Playwright UI：16 passed。
-- 源码 Electron 版本已在隔离 userData 中启动并通过冒烟测试；随后生成 arm64/x64 Release ZIP。
+- Publish the first complete desktop distribution with bundled Node.js, Python, and OpenClaw runtimes.
+- Add in-app provider, API key, model, Agent binding, runtime, and security checks.
+- Add the single-room Inner Court boundary, terminal-record deletion, attachment cleanup, capability checks, and safe first-launch behavior.
 
-## 发布边界
+## 0.1.0–0.1.4
 
-仓库与 Release 不包含个人供应商信息、API Key、本机运行数据、日志、缓存或本地凭据。用户需要在每台机器首次启动时自行配置供应商。源码构建命令见 [README.md](README.md)。
+- Preserve the historical macOS desktop packages from the initial 0.1.x development line.
+- Provide Apple Silicon and Intel ZIP packages and the early desktop setup workflow.
+
+For the full product explanation, architecture, setup guide, troubleshooting, and security boundary, see [README.md](README.md) or [README.zh-CN.md](README.zh-CN.md).

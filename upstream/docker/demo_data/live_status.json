@@ -1,0 +1,38 @@
+{
+  "generatedAt": "demo",
+  "taskSource": "tasks_source.json",
+  "officials": [
+    {"name": "中书令", "org": "中书省", "duty": "起草任务令与优先级"},
+    {"name": "侍中", "org": "门下省", "duty": "审议与退回机制"},
+    {"name": "尚书令", "org": "尚书省", "duty": "派单与升级裁决"}
+  ],
+  "tasks": [],
+  "history": [],
+  "metrics": {
+    "officialCount": 3,
+    "todayDone": 0,
+    "inProgress": 0,
+    "blocked": 0
+  },
+  "syncStatus": {
+    "ok": true,
+    "statusLevel": "ok",
+    "consecutiveFailures": 0,
+    "lastSuccessAt": null,
+    "lastSyncAt": null,
+    "durationMs": 0,
+    "source": "demo",
+    "recordCount": 0,
+    "created": 0,
+    "updated": 0,
+    "skipped": 0,
+    "archived": 0,
+    "missingFields": {},
+    "error": null
+  },
+  "health": {
+    "syncOk": true,
+    "syncLatencyMs": 0,
+    "missingFieldCount": 0
+  }
+}

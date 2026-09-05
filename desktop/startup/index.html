@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Edict_InnerCourt · 正在启动</title>
+    <link rel="stylesheet" href="./startup.css" />
+  </head>
+  <body>
+    <main class="startup-shell">
+      <div class="brand-mark" aria-hidden="true">诏</div>
+      <p class="eyebrow">Edict_InnerCourt</p>
+      <h1 id="title">正在启动三省六部总控台</h1>
+      <p id="message">正在准备本地运行环境和原始 EDICT 看板…</p>
+      <div class="progress-track" aria-hidden="true"><span id="progress"></span></div>
+      <div id="details" class="details" aria-live="polite"></div>
+      <div class="actions">
+        <button id="retry" type="button" hidden>重试启动</button>
+        <button id="settings" class="secondary" type="button">打开设置</button>
+      </div>
+    </main>
+    <script type="module" src="./startup.js"></script>
+  </body>
+</html>

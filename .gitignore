@@ -1,0 +1,46 @@
+.DS_Store
+upstream/vendor/python/
+
+# Local build, test, and interpreter artifacts. Recreate these with the
+# documented install/build commands instead of keeping them in the workspace.
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+desktop/test-results/
+desktop/playwright-report/
+upstream/edict/frontend/node_modules/
+upstream/edict/frontend/dist/
+upstream/edict/frontend/*.tsbuildinfo
+upstream/data/*.lock
+upstream/data/.refresh_pending
+upstream/data/audit_log.json
+
+# Machine-local runtime data. Only the schema belongs in the public source tree.
+upstream/data/*
+!upstream/data/schema.json
+**/*.json.lock
+**/*.sqlite
+**/*.sqlite-*
+
+# Packaged/runtime build output. Release ZIPs are uploaded as GitHub Release
+# assets rather than committed to the source repository.
+desktop/portable-runtime/
+desktop/.portable-runtime-cache/
+desktop/dist-electron/
+desktop/release/
+desktop/test-results/
+desktop/playwright-report/
+
+# Local configuration and credentials.
+.env
+.env.*
+!.env.example
+**/credentials.json
+**/providers.json
+**/openclaw.json.bak*
+
+# Private working notes and machine-specific verification records.
+HANDOFF.md
+VERIFICATION_INNERCOURT.md
+phase*/
+specs/

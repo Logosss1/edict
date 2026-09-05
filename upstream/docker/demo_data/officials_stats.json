@@ -1,0 +1,12 @@
+{
+  "generatedAt": "demo",
+  "officials": [],
+  "totals": {
+    "tokens_total": 0,
+    "cache_total": 0,
+    "cost_usd": 0,
+    "cost_cny": 0,
+    "tasks_done": 0
+  },
+  "top_official": ""
+}

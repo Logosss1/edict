@@ -1,0 +1,151 @@
+{
+  "name": "edict-innercourt",
+  "version": "0.1.5",
+  "description": "Edict_InnerCourt 三省六部与御书房",
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "test:ui": "playwright test",
+    "build:electron": "node -e \"require('node:fs').rmSync('dist-electron', {recursive:true, force:true})\" && tsc -p tsconfig.json",
+    "build:python": "node scripts/run-python.mjs scripts/prepare-python.py",
+    "build:frontend": "if [ ! -d ../upstream/edict/frontend/node_modules ]; then npm --prefix ../upstream/edict/frontend ci; fi && npm --prefix ../upstream/edict/frontend run build",
+    "build": "npm run build:python && npm run build:frontend && npm run build:electron",
+    "prepare": "npm run build:electron",
+    "prepare:runtime": "node scripts/prepare-portable-runtime.mjs",
+    "prepare:runtime:all": "node scripts/prepare-portable-runtime.mjs --all",
+    "start": "npm run prepare:runtime && npm run build && electron .",
+    "package:mac": "npm run prepare:runtime -- --arch arm64 && npm run build && electron-builder --mac dir --arm64",
+    "dist:mac": "npm run dist:mac:zip",
+    "dist:mac:zip": "npm run prepare:runtime:all && npm run build && electron-builder --mac zip --x64 --arm64",
+    "verify": "npm run typecheck && npm run typecheck:test && npm test"
+  },
+  "dependencies": {
+    "json5": "^2.2.3"
+  },
+  "build": {
+    "appId": "io.edict.desktop.migration",
+    "productName": "Edict_InnerCourt",
+    "forceCodeSigning": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist-electron/**",
+      "settings/**",
+      "startup/**",
+      "monitor/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "portable-runtime/shared/openclaw",
+        "to": "runtime/openclaw",
+        "filter": [
+          "**/*",
+          "!**/test/**",
+          "!**/tests/**",
+          "!**/*.map"
+        ]
+      },
+      {
+        "from": "portable-runtime/shared/licenses",
+        "to": "runtime/licenses",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "portable-runtime/${arch}/bin",
+        "to": "runtime/bin",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "portable-runtime/${arch}/python",
+        "to": "runtime/python",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../upstream",
+        "to": "upstream",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/node_modules/**",
+          "!**/.pytest_cache/**",
+          "!data/**",
+          "!**/.git/**",
+          "!edict/frontend/**",
+          "!edict/backend/app/api/**",
+          "!edict/backend/app/config.py",
+          "!edict/backend/app/db.py",
+          "!edict/backend/app/main.py",
+          "!edict/backend/app/models/**",
+          "!edict/backend/app/services/**",
+          "!edict/backend/app/workers/**",
+          "!edict/backend/requirements.txt",
+          "!docs/**",
+          "!examples/**",
+          "!tests/**",
+          "!.github/**",
+          "!README*.md",
+          "!CONTRIBUTING.md",
+          "!ROADMAP.md",
+          "!SECURITY.md",
+          "!CODE_OF_CONDUCT.md",
+          "!WINDOWS_INSTALL_CN.md",
+          "!edict_agent_architecture.md",
+          "!Dockerfile",
+          "!docker-compose.yml",
+          "!edict/Dockerfile",
+          "!edict/docker-compose.yml",
+          "!edict/alembic.ini",
+          "!edict/migration/**",
+          "!install.sh",
+          "!install.ps1",
+          "!start.sh",
+          "!uninstall.sh",
+          "!edict.sh",
+          "!edict.service",
+          "!requirements.txt",
+          "!requirements-desktop.txt",
+          "!scripts/record_demo.py",
+          "!scripts/take_screenshots.py",
+          "!scripts/refresh_watcher.py",
+          "!scripts/run_loop.sh",
+          "!scripts/run_loop.ps1"
+        ]
+      },
+      {
+        "from": "../upstream/data/schema.json",
+        "to": "upstream/data/schema.json"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "minimumSystemVersion": "13.0",
+      "identity": null,
+      "hardenedRuntime": false,
+      "notarize": false
+    }
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "^22.10.1",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

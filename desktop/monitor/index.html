@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Edict_InnerCourt · 执行监控</title>
+    <link rel="stylesheet" href="./monitor.css" />
+  </head>
+  <body>
+    <main class="monitor-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Edict_InnerCourt</p>
+          <h1>执行监控</h1>
+          <p id="updated" class="muted">正在读取原始 EDICT 状态…</p>
+        </div>
+        <div class="top-actions">
+          <button id="refresh" class="button secondary" type="button">刷新</button>
+          <button id="settings" class="button secondary" type="button">设置</button>
+          <button id="dashboard" class="button primary" type="button">总控台</button>
+        </div>
+      </header>
+
+      <section id="runtime-strip" class="runtime-strip" aria-live="polite"></section>
+
+      <div class="content-grid">
+        <section class="panel task-panel">
+          <div class="panel-heading">
+            <div>
+              <h2>任务队列</h2>
+              <p class="muted">状态来自原 EDICT 看板，不另建任务状态机。</p>
+            </div>
+            <span id="task-count" class="count-badge">0</span>
+          </div>
+          <div id="task-list" class="task-list" aria-live="polite"></div>
+        </section>
+
+        <section class="panel detail-panel">
+          <div class="panel-heading">
+            <div>
+              <h2 id="detail-title">选择一个任务</h2>
+              <p id="detail-meta" class="muted">任务的 Agent、部门、阶段和活动会显示在这里。</p>
+            </div>
+            <span id="detail-state" class="state-badge neutral">未选择</span>
+          </div>
+          <div id="detail-body" class="detail-body empty-detail">暂无任务详情</div>
+          <div id="task-actions" class="task-actions" hidden>
+            <button data-action="stop" class="button secondary" type="button">叫停</button>
+            <button data-action="cancel" class="button danger" type="button">取消</button>
+            <button data-action="resume" class="button secondary" type="button">恢复</button>
+            <span class="spacer"></span>
+            <button data-action="retry" class="button secondary" type="button">重试</button>
+            <button data-action="escalate" class="button secondary" type="button">升级</button>
+            <button data-action="rollback" class="button secondary" type="button">回滚</button>
+            <button data-action="archive" class="button ghost" type="button">归档</button>
+          </div>
+        </section>
+      </div>
+
+      <section class="lower-grid">
+        <section class="panel agents-panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Agent 心跳</h2>
+              <p class="muted">Gateway 与工作空间状态</p>
+            </div>
+          </div>
+          <div id="agent-list" class="agent-list"></div>
+        </section>
+        <section class="panel errors-panel">
+          <div class="panel-heading">
+            <div>
+              <h2>最近错误</h2>
+              <p class="muted">接口失败会保留在诊断中，不会让整页变空。</p>
+            </div>
+          </div>
+          <div id="error-list" class="error-list" aria-live="polite"></div>
+        </section>
+      </section>
+    </main>
+    <script type="module" src="./monitor.js"></script>
+  </body>
+</html>

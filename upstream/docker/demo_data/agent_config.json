@@ -1,0 +1,203 @@
+{
+  "generatedAt": "demo",
+  "defaultModel": "unknown",
+  "knownModels": [],
+  "agents": [
+    {
+      "id": "shangshu",
+      "label": "尚书省",
+      "role": "尚书令",
+      "duty": "派单与升级裁决",
+      "emoji": "📮",
+      "model": "unknown",
+      "defaultModel": "unknown",
+      "isDefaultModel": true,
+      "workspace": "/app/.openclaw/workspace-shangshu",
+      "skills": [
+        {
+          "name": "dispatch",
+          "path": "/app/.openclaw/workspace-shangshu/skills/dispatch/SKILL.md",
+          "exists": true,
+          "description": "---"
+        },
+        {
+          "name": "kanban-local",
+          "path": "/app/.openclaw/workspace-shangshu/skills/kanban-local/SKILL.md",
+          "exists": true,
+          "description": "---"
+        },
+        {
+          "name": "organization-governance",
+          "path": "/app/.openclaw/workspace-shangshu/skills/organization-governance/SKILL.md",
+          "exists": true,
+          "description": "---"
+        }
+      ],
+      "allowAgents": [
+        "zhongshu",
+        "menxia",
+        "hubu",
+        "libu",
+        "bingbu",
+        "xingbu",
+        "gongbu"
+      ]
+    },
+    {
+      "id": "zhongshu",
+      "label": "中书省",
+      "role": "中书令",
+      "duty": "起草任务令与优先级",
+      "emoji": "📜",
+      "model": "unknown",
+      "defaultModel": "unknown",
+      "isDefaultModel": true,
+      "workspace": "/app/.openclaw/workspace-zhongshu",
+      "skills": [
+        {
+          "name": "planning",
+          "path": "/app/.openclaw/workspace-zhongshu/skills/planning/SKILL.md",
+          "exists": true,
+          "description": "---"
+        }
+      ],
+      "allowAgents": [
+        "menxia",
+        "shangshu"
+      ]
+    },
+    {
+      "id": "menxia",
+      "label": "门下省",
+      "role": "侍中",
+      "duty": "审议与退回机制",
+      "emoji": "🔍",
+      "model": "unknown",
+      "defaultModel": "unknown",
+      "isDefaultModel": true,
+      "workspace": "/app/.openclaw/workspace-menxia",
+      "skills": [
+        {
+          "name": "review",
+          "path": "/app/.openclaw/workspace-menxia/skills/review/SKILL.md",
+          "exists": true,
+          "description": "---"
+        }
+      ],
+      "allowAgents": [
+        "shangshu",
+        "zhongshu"
+      ]
+    },
+    {
+      "id": "hubu",
+      "label": "户部",
+      "role": "户部尚书",
+      "duty": "资源/预算/成本",
+      "emoji": "💰",
+      "model": "unknown",
+      "defaultModel": "unknown",
+      "isDefaultModel": true,
+      "workspace": "/app/.openclaw/workspace-hubu",
+      "skills": [
+        {
+          "name": "data-analysis",
+          "path": "/app/.openclaw/workspace-hubu/skills/data-analysis/SKILL.md",
+          "exists": true,
+          "description": "---"
+        }
+      ],
+      "allowAgents": [
+        "shangshu"
+      ]
+    },
+    {
+      "id": "libu",
+      "label": "礼部",
+      "role": "礼部尚书",
+      "duty": "文档/汇报/规范",
+      "emoji": "📝",
+      "model": "unknown",
+      "defaultModel": "unknown",
+      "isDefaultModel": true,
+      "workspace": "/app/.openclaw/workspace-libu",
+      "skills": [
+        {
+          "name": "doc-writer",
+          "path": "/app/.openclaw/workspace-libu/skills/doc-writer/SKILL.md",
+          "exists": true,
+          "description": "---"
+        }
+      ],
+      "allowAgents": [
+        "shangshu"
+      ]
+    },
+    {
+      "id": "bingbu",
+      "label": "兵部",
+      "role": "兵部尚书",
+      "duty": "应急与巡检",
+      "emoji": "⚔️",
+      "model": "unknown",
+      "defaultModel": "unknown",
+      "isDefaultModel": true,
+      "workspace": "/app/.openclaw/workspace-bingbu",
+      "skills": [
+        {
+          "name": "coding",
+          "path": "/app/.openclaw/workspace-bingbu/skills/coding/SKILL.md",
+          "exists": true,
+          "description": "---"
+        }
+      ],
+      "allowAgents": [
+        "shangshu"
+      ]
+    },
+    {
+      "id": "xingbu",
+      "label": "刑部",
+      "role": "刑部尚书",
+      "duty": "合规/审计/红线",
+      "emoji": "⚖️",
+      "model": "unknown",
+      "defaultModel": "unknown",
+      "isDefaultModel": true,
+      "workspace": "/app/.openclaw/workspace-xingbu",
+      "skills": [
+        {
+          "name": "security-review",
+          "path": "/app/.openclaw/workspace-xingbu/skills/security-review/SKILL.md",
+          "exists": true,
+          "description": "---"
+        }
+      ],
+      "allowAgents": [
+        "shangshu"
+      ]
+    },
+    {
+      "id": "gongbu",
+      "label": "工部",
+      "role": "工部尚书",
+      "duty": "工程交付与自动化",
+      "emoji": "🔧",
+      "model": "unknown",
+      "defaultModel": "unknown",
+      "isDefaultModel": true,
+      "workspace": "/app/.openclaw/workspace-gongbu",
+      "skills": [
+        {
+          "name": "ops",
+          "path": "/app/.openclaw/workspace-gongbu/skills/ops/SKILL.md",
+          "exists": true,
+          "description": "---"
+        }
+      ],
+      "allowAgents": [
+        "shangshu"
+      ]
+    }
+  ]
+}

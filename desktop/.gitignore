@@ -1,0 +1,8 @@
+node_modules/
+portable-runtime/
+.portable-runtime-cache/
+dist-electron/
+release/
+.DS_Store
+test-results/
+playwright-report/

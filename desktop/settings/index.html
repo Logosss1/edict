@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Edict_InnerCourt · 设置</title>
+    <link rel="stylesheet" href="./settings.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <div>
+          <h1>Edict_InnerCourt</h1>
+          <p class="subtitle">设置</p>
+        </div>
+        <div class="header-actions"><button id="open-monitor" class="button ghost" type="button">执行监控</button><button id="open-dashboard" class="button ghost" type="button">返回总控台</button></div>
+      </header>
+
+      <nav class="tabs" aria-label="设置分类">
+        <button class="tab active" data-tab="providers" type="button">供应商</button>
+        <button class="tab" data-tab="agents" type="button">Agent 与模型</button>
+        <button class="tab" data-tab="runtime" type="button">运行策略</button>
+        <button class="tab" data-tab="dependencies" type="button">运行依赖</button>
+        <button class="tab" data-tab="mcp" type="button">Skills / MCP</button>
+        <button class="tab" data-tab="ops" type="button">执行诊断</button>
+      </nav>
+
+      <section class="notice">
+        <strong>安全模式</strong>
+        <span>默认不自动唤醒 Agent；API Key 不进入普通配置、活动日志或 Git，只在桌面主进程内处理。</span>
+        <button id="reload-dashboard" class="button secondary notice-action" type="button" hidden>重载看板</button>
+      </section>
+
+      <section id="tab-providers" class="tab-panel">
+        <div class="layout">
+          <aside class="panel provider-list-panel">
+            <div class="panel-heading">
+              <div><h2>供应商</h2><p>已保存的连接配置</p></div>
+              <button id="new-provider" class="icon-button" title="新增供应商" type="button">＋</button>
+            </div>
+            <div id="provider-list" class="provider-list" aria-live="polite"></div>
+            <div id="empty-providers" class="empty-state">还没有供应商配置</div>
+          </aside>
+
+          <section class="panel editor-panel">
+            <div class="panel-heading editor-heading">
+              <div><h2 id="editor-title">新增供应商</h2><p>保存后可在 Agent 与模型页绑定</p></div>
+              <span id="provider-status" class="status-dot neutral">未保存</span>
+            </div>
+            <form id="provider-form" novalidate>
+              <input id="provider-id" type="hidden" />
+              <div class="form-grid">
+                <label><span>显示名称</span><input id="provider-name" name="name" placeholder="例如：示例供应商 测试" required /></label>
+                <label><span>协议</span><select id="provider-type" name="type"><option value="openai-compatible">OpenAI 兼容</option></select></label>
+              </div>
+              <label><span>Base URL</span><input id="provider-url" name="baseUrl" placeholder="https://example.com/v1" inputmode="url" required /><small>测试会尝试标准的 <code>/v1/models</code> 路径。</small></label>
+              <label><span>API Key</span><input id="provider-key" name="apiKey" type="password" placeholder="仅在新增或更换密钥时填写" autocomplete="new-password" /><small id="key-hint">保存后只显示“已设置”，不会回显原密钥。</small></label>
+              <label><span>模型 ID</span><textarea id="provider-models" name="models" rows="5" placeholder="每行一个模型 ID，例如：gpt-4o-mini"></textarea><small>测试发现的模型可直接回填，再保存到 OpenClaw 模型目录。</small></label>
+              <div class="form-grid">
+                <label><span>默认模型</span><input id="provider-default-model" name="defaultModel" placeholder="可选，必须在模型列表中" /></label>
+                <label><span>供应商 ID</span><input id="provider-id-preview" placeholder="保存时自动生成" disabled /></label>
+              </div>
+              <div id="form-error" class="form-error" role="alert"></div>
+              <div id="form-success" class="form-success" role="status"></div>
+              <div id="provider-test-meta" class="provider-test-meta" role="status" hidden></div>
+              <div class="actions"><button id="preset-example-provider" class="button secondary" type="button">填入 示例供应商 模板</button><button id="test-provider" class="button secondary" type="button">测试连接</button><span class="spacer"></span><button id="remove-provider" class="button danger" type="button" hidden>删除</button><button id="save-provider" class="button primary" type="submit">保存供应商</button></div>
+            </form>
+          </section>
+        </div>
+      </section>
+
+      <section id="tab-agents" class="tab-panel" hidden>
+        <div class="layout agent-layout">
+          <aside class="panel provider-list-panel"><div class="panel-heading"><div><h2>已注册 Agent</h2><p id="agent-count">读取 agents.json</p></div><button id="refresh-agents" class="icon-button" title="刷新 Agent" type="button">↻</button></div><div id="agent-list" class="provider-list"></div></aside>
+          <section class="panel editor-panel">
+            <div class="panel-heading editor-heading"><div><h2 id="agent-title">选择 Agent</h2><p id="agent-meta">模型与策略会写入 OpenClaw 的 agents.list</p></div><span id="agent-status" class="status-dot neutral">未选择</span></div>
+            <form id="agent-form" novalidate>
+              <div class="form-grid"><label><span>供应商</span><select id="agent-provider"></select></label><label><span>模型</span><select id="agent-model"></select></label></div>
+              <div class="actions compact"><button id="apply-agent-model" class="button primary" type="button">应用 Agent 模型</button><button id="set-default-model" class="button secondary" type="button">设为全局默认</button><span id="agent-binding" class="inline-note"></span></div>
+              <div class="section-rule"></div>
+              <div class="form-grid"><label><span>思考档位</span><select id="agent-thinking" aria-describedby="agent-thinking-details"><option value="">继承全局</option></select><small id="agent-thinking-details" role="status"></small></label><label><span>工具配置</span><select id="agent-tool-profile"><option value="">继承全局</option><option>minimal</option><option>coding</option><option>messaging</option><option>full</option></select></label></div>
+              <div class="actions capability-actions"><button class="button secondary" type="button" data-manage-capabilities>管理模型思考档位</button><button class="button secondary" type="button" data-refresh-capabilities hidden>重试读取档位</button></div>
+              <div class="form-grid"><label><span>技能白名单</span><textarea id="agent-skills" rows="4" placeholder="每行一个 skill；留空表示清除显式限制"></textarea></label><label><span>可调用 Agent</span><textarea id="agent-allow-agents" rows="4" placeholder="每行一个 Agent ID"></textarea></label></div>
+              <div class="form-grid"><label><span>沙箱模式</span><select id="agent-sandbox-mode"><option value="">继承默认</option><option>off</option><option>non-main</option><option>all</option></select></label><label><span>工作区访问</span><select id="agent-workspace-access"><option value="">继承默认</option><option>none</option><option>ro</option><option>rw</option></select></label></div>
+              <div id="agent-form-error" class="form-error"></div><div id="agent-form-success" class="form-success"></div>
+              <div class="actions"><button id="save-agent-policy" class="button primary" type="button">保存 Agent 策略</button><span class="spacer"></span><button id="add-skill" class="button secondary" type="button">新增 Skill</button></div>
+            </form>
+          </section>
+        </div>
+        <section class="panel skill-add-panel"><div class="panel-heading"><div><h2>新增 Skill 到工作区</h2><p>调用原始 EDICT /api/add-skill，写入所选 Agent 的 skills 目录。</p></div></div><div class="form-grid skill-grid"><label><span>Skill 名称</span><input id="skill-name" placeholder="例如：weekly-report" /></label><label><span>触发条件（可选）</span><input id="skill-trigger" placeholder="例如：需要周报时" /></label></div><label><span>描述</span><input id="skill-description" placeholder="技能用途" /></label></section>
+      </section>
+
+      <section id="tab-runtime" class="tab-panel" hidden>
+        <section class="panel settings-panel"><div class="panel-heading"><div><h2>全局运行策略</h2><p>这些选项通过 OpenClaw 配置或桌面进程重启后生效。</p></div><span id="runtime-status" class="status-dot neutral">未读取</span></div>
+          <form id="runtime-form">
+            <div class="form-grid"><label><span>全局供应商</span><select id="global-provider"></select></label><label><span>全局默认模型</span><select id="global-model"></select></label></div>
+            <div class="form-grid"><label><span>默认思考档位</span><select id="global-thinking" aria-describedby="global-thinking-details"><option value="">不修改</option></select><small id="global-thinking-details" role="status"></small></label><label><span>默认工具配置</span><select id="global-tool-profile"><option value="">不修改</option><option>minimal</option><option>coding</option><option>messaging</option><option>full</option></select></label></div>
+            <div class="actions capability-actions"><button class="button secondary" type="button" data-manage-capabilities>管理模型思考档位</button><button class="button secondary" type="button" data-refresh-capabilities hidden>重试读取档位</button></div>
+            <div class="toggle-grid"><label class="toggle"><input id="network-search" type="checkbox" /><span>允许 web 搜索</span></label><label class="toggle"><input id="network-fetch" type="checkbox" /><span>允许网页抓取</span></label><label class="toggle"><input id="auto-dispatch" type="checkbox" /><span>启动自动派发</span></label><label class="toggle"><input id="gateway-restart" type="checkbox" /><span>允许模型变更重启 Gateway</span></label></div>
+            <div id="runtime-error" class="form-error"></div><div id="runtime-success" class="form-success"></div>
+            <div class="actions"><button id="save-runtime" class="button primary" type="submit">保存运行策略</button></div>
+          </form>
+        </section>
+      </section>
+
+      <section id="tab-dependencies" class="tab-panel" hidden>
+        <section class="panel settings-panel" aria-labelledby="dependencies-heading">
+          <div class="panel-heading"><h2 id="dependencies-heading">运行依赖</h2><span id="dependencies-status" class="status-dot neutral" role="status">未检测</span></div>
+          <form id="dependencies-form">
+            <label for="openclaw-path">OpenClaw 程序路径</label>
+            <div class="path-control"><input id="openclaw-path" name="openclawPath" autocomplete="off" spellcheck="false" placeholder="自动检测…" /><button class="button secondary" type="button" data-select-path="openclawPath">选择 OpenClaw</button></div>
+            <label for="node-path">Node.js 程序路径</label>
+            <div class="path-control"><input id="node-path" name="nodePath" autocomplete="off" spellcheck="false" placeholder="自动检测…" /><button class="button secondary" type="button" data-select-path="nodePath">选择 Node.js</button></div>
+            <p id="dependencies-result" class="dependency-result" role="status"></p>
+            <div id="dependencies-error" class="form-error" role="alert" tabindex="-1"></div>
+            <div class="actions"><button id="save-dependencies" class="button primary" type="submit">保存并检测</button><button id="check-dependencies" class="button secondary" type="button">重新检测</button><button id="auto-dependencies" class="button ghost" type="button">恢复自动检测</button></div>
+          </form>
+        </section>
+      </section>
+
+      <section id="tab-mcp" class="tab-panel" hidden>
+        <div class="layout"><aside class="panel provider-list-panel"><div class="panel-heading"><div><h2>MCP 服务器</h2><p id="mcp-count">读取 mcp.servers</p></div><button id="new-mcp" class="icon-button" title="新增 MCP" type="button">＋</button></div><div id="mcp-list" class="provider-list"></div><div id="empty-mcp" class="empty-state">还没有 MCP 配置</div></aside><section class="panel editor-panel"><div class="panel-heading editor-heading"><div><h2 id="mcp-title">新增 MCP 服务器</h2><p>保存后使用 OpenClaw 原生 MCP registry；密钥字段只显示名称。</p></div><span id="mcp-status" class="status-dot neutral">未保存</span></div><form id="mcp-form"><div class="form-grid"><label><span>名称</span><input id="mcp-name" placeholder="例如：local-tools" /></label><label><span>传输方式</span><select id="mcp-transport"><option value="stdio">stdio</option><option value="sse">sse</option><option value="streamable-http">streamable-http</option></select></label></div><label><span>配置 JSON</span><textarea id="mcp-json" rows="15" spellcheck="false" placeholder='{"command":"npx","args":["-y","your-mcp"]}'></textarea><small>stdio 需要 command；sse/streamable-http 需要 url。保存后可点击重新加载。</small></label><div id="mcp-error" class="form-error"></div><div id="mcp-success" class="form-success"></div><div class="actions"><button id="reload-mcp" class="button secondary" type="button">重新加载 MCP</button><span class="spacer"></span><button id="remove-mcp" class="button danger" type="button" hidden>删除</button><button id="save-mcp" class="button primary" type="submit">保存 MCP</button></div></form></section></div>
+      </section>
+
+      <section id="tab-ops" class="tab-panel" hidden>
+        <section class="panel ops-panel"><div class="panel-heading"><div><h2>执行诊断</h2><p>复用原始看板的任务、活动、调度器和 Agent 心跳接口。</p></div><button id="refresh-ops" class="button secondary" type="button">刷新</button></div><div id="ops-summary" class="ops-summary"></div><div id="ops-errors" class="form-error"></div><div id="ops-tasks" class="ops-tasks"></div><pre id="ops-json" class="diagnostic-json"></pre></section>
+      </section>
+
+      <footer id="diagnostics" class="diagnostics">正在读取桌面运行状态…</footer>
+    </main>
+    <script type="module" src="./settings.js"></script>
+  </body>
+</html>

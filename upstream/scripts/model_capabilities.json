@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "models": {
+    "gpt-5.5": {
+      "reasoning": true,
+      "input": ["text", "image"],
+      "thinkingLevelMap": {"xhigh": "xhigh"},
+      "compat": {"supportsReasoningEffort": true, "supportedReasoningEfforts": ["low", "medium", "high", "xhigh"]}
+    },
+    "gpt-5.6": {
+      "reasoning": true,
+      "input": ["text", "image"],
+      "thinkingLevelMap": {"off": "none", "xhigh": "xhigh", "max": "max"},
+      "compat": {"supportsReasoningEffort": true, "supportedReasoningEfforts": ["none", "low", "medium", "high", "xhigh", "max"], "reasoningEffortMap": {"minimal": "none"}}
+    },
+    "gpt-5.6-sol": {
+      "reasoning": true,
+      "input": ["text", "image"],
+      "thinkingLevelMap": {"off": "none", "xhigh": "xhigh", "max": "max"},
+      "compat": {"supportsReasoningEffort": true, "supportedReasoningEfforts": ["none", "low", "medium", "high", "xhigh", "max"], "reasoningEffortMap": {"minimal": "none"}}
+    },
+    "gpt-5.6-terra": {
+      "reasoning": true,
+      "input": ["text", "image"],
+      "thinkingLevelMap": {"off": "none", "xhigh": "xhigh", "max": "max"},
+      "compat": {"supportsReasoningEffort": true, "supportedReasoningEfforts": ["none", "low", "medium", "high", "xhigh", "max"], "reasoningEffortMap": {"minimal": "none"}}
+    },
+    "gpt-5.6-luna": {
+      "reasoning": true,
+      "input": ["text", "image"],
+      "thinkingLevelMap": {"off": "none", "xhigh": "xhigh", "max": "max"},
+      "compat": {"supportsReasoningEffort": true, "supportedReasoningEfforts": ["none", "low", "medium", "high", "xhigh", "max"], "reasoningEffortMap": {"minimal": "none"}}
+    }
+  }
+}

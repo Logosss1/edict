@@ -34,6 +34,8 @@ Edict_InnerCourt 是 EDICT 的桌面化改造版：保留“三省六部”的�
 - 进行中的议事会阻止再次新建，避免多个上下文同时占用同一套内廷运行资源。
 - Agent 的建议不会自动变成任务；需要皇上审批，并经过单独确认后才提交到原有任务 API。
 - 议事结束后，内廷密档可以删除该记录，同时清理对应附件和临时运行目录。
+- 新开的御书房会接入每个 Agent 的规范主会话 `agent:<agentId>:main`，同一个 Agent 在任务看板和御书房之间共享同一套工作记忆。
+- 御书房可以读取实时、只读的工作快照，也可以召见 Agent 汇报当前任务；不会创建第二个任务，也不会改变原任务。
 
 ### 4. 所有主要历史记录都可控删除
 
@@ -75,8 +77,9 @@ Edict_InnerCourt 是 EDICT 的桌面化改造版：保留“三省六部”的�
 1. 打开“御书房”，创建唯一一场内廷议事并邀请需要的 Agent。
 2. 输入问题或上传附件；每轮回复按队列串行进行，后续消息不会并发开启第二场对话。
 3. 查看各 Agent 的意见、思考深度和研究结果。研究能力仅允许受控的资源/文档读取。
-4. 选择方案并审批，再确认是否创建任务。
-5. 新任务回到原有 EDICT 流程，从太子开始派发；议事本身可以结束、归档或删除。
+4. 在实时工作状态面板查看每个 Agent 正在做什么；需要时询问当前进度。该操作只读，并复用 Agent 的规范主会话记忆。
+5. 选择方案并审批，再确认是否创建任务。
+6. 新任务回到原有 EDICT 流程，从太子开始派发；议事本身可以结束、归档或删除。
 
 ### 记录清理原则
 
@@ -87,10 +90,10 @@ Edict_InnerCourt 是 EDICT 的桌面化改造版：保留“三省六部”的�
 
 ## 新电脑安装
 
-从 [Releases](https://github.com/Logosss1/edict/releases/latest) 下载：
+从 [Releases](https://github.com/Logosss1/Edict_InnerCourt/releases/latest) 下载：
 
-- `Edict_InnerCourt-0.1.5-arm64-mac.zip`：Apple Silicon（M 系列）。
-- `Edict_InnerCourt-0.1.5-mac.zip`：Intel。
+- `Edict_InnerCourt-0.2.0-arm64-mac.zip`：Apple Silicon（M 系列）。
+- `Edict_InnerCourt-0.2.0-mac.zip`：Intel。
 
 解压后打开 `Edict_InnerCourt.app`，进入设置：
 

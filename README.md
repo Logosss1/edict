@@ -34,6 +34,8 @@ The project keeps EDICT's original organization: the user issues a decree, the C
 - An active discussion prevents another one from being created, avoiding competing contexts and shared runtime resources.
 - Agent suggestions do not automatically become tasks. The user must approve the proposal and explicitly confirm task creation through the existing task API.
 - After a discussion ends, its Inner Court archive can be deleted together with its attachments and temporary runtime directory.
+- New rooms attach to each Agent's canonical `agent:<agentId>:main` session, so the same Agent keeps one working memory across the task board and Inner Court.
+- Inner Court can read a live, read-only progress snapshot and summon an Agent for a current-task report without creating a second task or changing the original work.
 
 ### 4. Deletion for major history records
 
@@ -75,8 +77,9 @@ Review results, retry/pause/cancel, or clean up finished history
 1. Open **Inner Court**, create the single available discussion, and invite the agents needed for the topic.
 2. Enter a question or attach files. Each turn is processed serially; a later message cannot open a second concurrent room.
 3. Review each agent's opinion, thinking depth, and research result. Research is limited to controlled resource and document reading.
-4. Select a proposal, approve it, and confirm whether it should become a task.
-5. The new task returns to the standard EDICT flow and starts with Crown Prince triage. The discussion itself can then be ended, archived, or deleted.
+4. Use the live work panel to see what each Agent is doing and ask for a current-task report when needed. This is read-only and shares the Agent's canonical working memory.
+5. Select a proposal, approve it, and confirm whether it should become a task.
+6. The new task returns to the standard EDICT flow and starts with Crown Prince triage. The discussion itself can then be ended, archived, or deleted.
 
 ### Record cleanup policy
 
@@ -87,10 +90,10 @@ Finished: show a delete action and remove the record plus its dedicated attachme
 
 ## New computer setup
 
-Download from [Releases](https://github.com/Logosss1/edict/releases/latest):
+Download from [Releases](https://github.com/Logosss1/Edict_InnerCourt/releases/latest):
 
-- `Edict_InnerCourt-0.1.5-arm64-mac.zip`: Apple Silicon Macs (M-series).
-- `Edict_InnerCourt-0.1.5-mac.zip`: Intel Macs.
+- `Edict_InnerCourt-0.2.0-arm64-mac.zip`: Apple Silicon Macs (M-series).
+- `Edict_InnerCourt-0.2.0-mac.zip`: Intel Macs.
 
 Extract the ZIP, open `Edict_InnerCourt.app`, and go to **Settings**:
 

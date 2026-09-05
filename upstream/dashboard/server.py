@@ -1036,6 +1036,65 @@ def get_agents_status():
     }
 
 
+def get_readiness():
+    """Return a redacted, actionable first-run readiness contract.
+
+    This deliberately checks the effective OpenClaw config used by the
+    dashboard, not only the settings metadata. A provider can be saved in the
+    desktop store while its model is still unbound or its secret is absent
+    from the child environment; those states must remain visibly unready.
+    """
+    config = read_json(OCLAW_HOME / 'openclaw.json', {})
+    if not isinstance(config, dict):
+        config = {}
+    providers = ((config.get('models') or {}).get('providers') or {})
+    agents = ((config.get('agents') or {}).get('list') or [])
+    defaults = ((config.get('agents') or {}).get('defaults') or {})
+    default_model = defaults.get('model', '')
+    if isinstance(default_model, dict):
+        default_model = default_model.get('primary', '')
+
+    configured_agents = [item for item in agents if isinstance(item, dict) and str(item.get('id') or '').strip()]
+    bound = []
+    secret_ready = False
+    for provider_id, provider in (providers.items() if isinstance(providers, dict) else []):
+        if not isinstance(provider, dict):
+            continue
+        api_key = provider.get('apiKey')
+        if isinstance(api_key, dict):
+            env_id = str(api_key.get('id') or '').strip()
+            if env_id and os.environ.get(env_id):
+                secret_ready = True
+        elif isinstance(api_key, str) and api_key.strip():
+            # Legacy plaintext is not considered ready; the settings layer
+            # must migrate it into secure storage before use.
+            secret_ready = False
+        for model in provider.get('models', []) if isinstance(provider.get('models'), list) else []:
+            if isinstance(model, dict) and str(model.get('id') or '').strip():
+                bound.append(f'{provider_id}/{model["id"]}')
+
+    models_ready = bool(bound)
+    agent_models = []
+    for agent in configured_agents:
+        model = agent.get('model') or default_model
+        if isinstance(model, dict):
+            model = model.get('primary', '')
+        if isinstance(model, str) and model.strip():
+            agent_models.append(model.strip())
+    agent_binding_ready = bool(agent_models) and all(model in bound for model in agent_models)
+    runtime = get_yushufang_service().check_runtime()
+    checks = [
+        {'id': 'runtime', 'label': '运行依赖', 'ready': bool(runtime.get('ok')), 'detail': 'OpenClaw 与 Node.js 已就绪' if runtime.get('ok') else '；'.join(runtime.get('errors') or [])},
+        {'id': 'provider', 'label': '供应商', 'ready': bool(providers), 'detail': f'{len(providers)} 个供应商已进入运行配置' if providers else '还没有供应商配置'},
+        {'id': 'secret', 'label': '密钥', 'ready': secret_ready, 'detail': '密钥已注入当前运行环境' if secret_ready else '请在设置中保存供应商密钥'},
+        {'id': 'model', 'label': '模型目录', 'ready': models_ready, 'detail': f'{len(bound)} 个模型可用' if models_ready else '供应商尚未配置模型'},
+        {'id': 'agent', 'label': 'Agent 绑定', 'ready': bool(configured_agents) and agent_binding_ready, 'detail': f'{len(configured_agents)} 个 Agent 已绑定有效模型' if configured_agents and agent_binding_ready else '请为至少一个 Agent 应用有效模型'},
+    ]
+    ready = all(item['ready'] for item in checks)
+    next_step = '可以开始召见 Agent 或创建任务。' if ready else next((item['detail'] for item in checks if not item['ready']), '请打开设置完成配置。')
+    return {'ok': True, 'ready': ready, 'checks': checks, 'next': next_step, 'checkedAt': now_iso()}
+
+
 def wake_agent(agent_id, message=''):
     """唤醒指定 Agent，发送一条心跳/唤醒消息。"""
     if not _SAFE_NAME_RE.match(agent_id):
@@ -2587,6 +2646,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(get_scheduler_state(task_id))
         elif p == '/api/agents-status':
             self.send_json(get_agents_status())
+        elif p == '/api/readiness':
+            self.send_json(get_readiness())
         elif p.startswith('/api/task-output/'):
             task_id = p.replace('/api/task-output/', '')
             if not task_id or not _SAFE_NAME_RE.match(task_id):
@@ -3200,6 +3261,14 @@ class Handler(BaseHTTPRequestHandler):
             message = body.get('message', '').strip()
             thinking = body.get('thinkingDefault', body.get('thinking'))
             result = get_yushufang_service().speak(room_id, message, thinking=thinking, attachment_ids=body.get('attachmentIds', []))
+            self.send_json(result, 200 if result.get('ok') else 400)
+
+        elif p == '/api/yushufang/ask-progress':
+            result = get_yushufang_service().ask_progress(
+                body.get('roomId', '').strip(),
+                body.get('agentId', '').strip(),
+                body.get('question'),
+            )
             self.send_json(result, 200 if result.get('ok') else 400)
 
         elif p == '/api/yushufang/remove-participant':

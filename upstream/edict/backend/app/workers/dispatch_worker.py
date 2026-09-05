@@ -20,10 +20,16 @@ import pathlib
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
+
+SCRIPTS_DIR = pathlib.Path(__file__).resolve().parents[4] / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+from file_lock import exclusive_file_lock
 
 from ..config import get_settings
 from ..services.event_bus import (
@@ -601,14 +607,16 @@ class DispatchWorker:
 
         def _run():
             try:
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                    env=env,
-                    cwd=settings.openclaw_project_dir or None,
-                )
+                lock_root = pathlib.Path(os.environ.get("EDICT_DATA_DIR") or (pathlib.Path(settings.openclaw_project_dir or ".") / "data"))
+                with exclusive_file_lock(lock_root / "agent-turns" / f"{agent}.lock", timeout=315):
+                    proc = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=300,
+                        env=env,
+                        cwd=settings.openclaw_project_dir or None,
+                    )
                 return {
                     "returncode": proc.returncode,
                     "stdout": proc.stdout[-5000:] if proc.stdout else "",
@@ -616,6 +624,8 @@ class DispatchWorker:
                 }
             except subprocess.TimeoutExpired:
                 return {"returncode": -1, "stdout": "", "stderr": "TIMEOUT after 300s"}
+            except TimeoutError:
+                return {"returncode": -1, "stdout": "", "stderr": "AGENT_TURN_LOCK_TIMEOUT"}
             except FileNotFoundError:
                 return {"returncode": -1, "stdout": "", "stderr": "openclaw command not found"}
             finally:

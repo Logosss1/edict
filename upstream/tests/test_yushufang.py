@@ -14,7 +14,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "dashboard"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from yushufang import YushufangService
+from yushufang import YushufangService, _redact_progress_text
 
 
 CATALOG = {
@@ -155,7 +155,7 @@ def _http_json(httpd, method, path, payload=None):
         conn.close()
 
 
-def test_open_room_persists_isolated_invited_members_and_keys(tmp_path):
+def test_open_room_persists_shared_invited_members_and_canonical_keys(tmp_path):
     service = make_service(tmp_path)
 
     room = room_from(service.open_room("设计发布方案", ["alpha", "beta"], thinking="high"))
@@ -165,7 +165,8 @@ def test_open_room_persists_isolated_invited_members_and_keys(tmp_path):
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert stored["thinking"] == "high"
     assert [member["id"] for member in stored["members"]] == ["alpha", "beta"]
-    assert stored["agentSessions"]["alpha"]["sessionKey"] == f"agent:alpha:yushufang:{room['id']}"
+    assert stored["sessionMode"] == "shared"
+    assert stored["agentSessions"]["alpha"]["sessionKey"] == "agent:alpha:main"
     assert "agentSessions" not in room  # secrets/internal routing metadata stay server-side
     assert service.open_room("bad", ["outsider", "not-registered"])["ok"] is False
 
@@ -240,7 +241,7 @@ def test_catalog_uses_registered_runtime_agents_without_implicit_default_roster(
     assert service.open_room("默认名单不应混入", ["taizi"])["ok"] is False
 
 
-def test_speak_runs_real_agents_serially_with_private_session_keys(tmp_path):
+def test_speak_runs_real_agents_serially_with_canonical_session_keys(tmp_path):
     service = make_service(tmp_path)
     room = room_from(service.open_room("提出实施建议", ["alpha", "beta"]))
 
@@ -250,8 +251,8 @@ def test_speak_runs_real_agents_serially_with_private_session_keys(tmp_path):
 
     assert [p.command[p.command.index("--agent") + 1] for p in FakeProcess.instances] == ["alpha", "beta"]
     assert [p.command[p.command.index("--session-key") + 1] for p in FakeProcess.instances] == [
-        f"agent:alpha:yushufang:{room['id']}",
-        f"agent:beta:yushufang:{room['id']}",
+        "agent:alpha:main",
+        "agent:beta:main",
     ]
     assert all(p.command[p.command.index("--thinking") + 1] == "max" for p in FakeProcess.instances)
     assert all("--json" in p.command and "--message" in p.command for p in FakeProcess.instances)
@@ -262,6 +263,54 @@ def test_speak_runs_real_agents_serially_with_private_session_keys(tmp_path):
     stored = service.get_room(room["id"])["room"]
     assert [item["authorId"] for item in stored["messages"] if item["kind"] == "agent"] == ["alpha", "beta"]
     assert "outsider" not in "\n".join(p.command[-1] for p in FakeProcess.instances)
+
+
+def test_progress_inquiry_reuses_canonical_session_and_records_live_reply(tmp_path):
+    service = make_service(tmp_path)
+    room = room_from(service.open_room("询问当前工作", ["alpha"]))
+
+    requested = service.ask_progress(room["id"], "alpha")
+    assert requested["ok"] is True
+    assert requested["queued"] is True
+    assert requested["request"]["mode"] == "read-only"
+    assert requested["request"]["sessionKey"] == "agent:alpha:main"
+    assert service.wait_for_progress_idle(requested["requestId"], timeout=3)
+
+    assert len(FakeProcess.instances) == 1
+    process = FakeProcess.instances[0]
+    assert process.command[process.command.index("--session-key") + 1] == "agent:alpha:main"
+    assert "只读进度询问" in process.command[process.command.index("--message") + 1]
+    stored = service.get_room(room["id"])["room"]
+    progress = [item for item in stored["messages"] if item.get("kind") == "progress"]
+    assert progress and progress[-1]["authorId"] == "alpha"
+    assert stored["progressRequests"][-1]["status"] == "completed"
+
+
+def test_live_progress_redacts_common_credential_shapes():
+    redacted = _redact_progress_text("api_key=fixture-secret Bearer abcdefghijkl sk-test_1234567890")
+    assert "fixture-secret" not in redacted
+    assert "abcdefghijkl" not in redacted
+    assert "sk-test_1234567890" not in redacted
+    assert "[已隐藏]" in redacted
+    assert "[已隐藏密钥]" in redacted
+
+
+def test_progress_inquiry_is_idempotently_deduplicated_while_running(tmp_path):
+    service = make_service(tmp_path)
+    FakeProcess.block = True
+    room = room_from(service.open_room("避免重复召见", ["alpha"]))
+    try:
+        first = service.ask_progress(room["id"], "alpha")
+        second = service.ask_progress(room["id"], "alpha")
+        assert first["ok"] is True
+        assert second["ok"] is True
+        assert second["duplicate"] is True
+        assert second["requestId"] == first["requestId"]
+    finally:
+        FakeProcess.release.set()
+        FakeProcess.block = False
+    assert service.wait_for_progress_idle(first["requestId"], timeout=3)
+    assert len(FakeProcess.instances) == 1
 
 
 def test_none_runtime_carrier_is_not_misreported_as_requested_minimal(tmp_path):
@@ -620,6 +669,39 @@ def test_server_yushufang_routes_expose_schema_and_gate_approval(tmp_path, monke
         httpd.server_close()
 
 
+def test_readiness_route_reports_actionable_checks_without_secret_values(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
+    import server as srv
+
+    openclaw_home = tmp_path / "openclaw-home"
+    openclaw_home.mkdir()
+    (openclaw_home / "openclaw.json").write_text(json.dumps({
+        "models": {"providers": {"test": {
+            "apiKey": {"source": "env", "provider": "default", "id": "READINESS_FIXTURE_KEY"},
+            "models": [{"id": "model"}],
+        }}},
+        "agents": {"defaults": {"model": "test/model"}, "list": [{"id": "alpha", "model": "test/model"}]},
+    }), encoding="utf-8")
+    monkeypatch.setattr(srv, "OCLAW_HOME", openclaw_home)
+    monkeypatch.setenv("READINESS_FIXTURE_KEY", "fixture-readiness-only")
+    httpd, thread = _start_http_server(service, monkeypatch)
+    try:
+        status, result = _http_json(httpd, "GET", "/api/readiness")
+        assert status == 200
+        assert result["ready"] is True
+        assert all("fixture-readiness-only" not in json.dumps(item) for item in result["checks"])
+
+        monkeypatch.delenv("READINESS_FIXTURE_KEY")
+        status, missing = _http_json(httpd, "GET", "/api/readiness")
+        assert status == 200
+        assert missing["ready"] is False
+        assert next(item for item in missing["checks"] if item["id"] == "secret")["ready"] is False
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=3)
+
+
 def test_restart_marks_running_room_interrupted_without_autorun(tmp_path):
     service = make_service(tmp_path)
     room = room_from(service.open_room("恢复测试", ["alpha"]))
@@ -655,7 +737,7 @@ def test_prince_private_room_cannot_merge_and_explicit_joint_invitation_is_separ
     service.speak(joint["id"], "请共同给出建议")
     assert service.wait_for_idle(joint["id"])
     assert "保密内容" not in FakeProcess.instances[-1].command[-1]
-    assert FakeProcess.instances[0].command[FakeProcess.instances[0].command.index("--session-key") + 1] != FakeProcess.instances[-1].command[FakeProcess.instances[-1].command.index("--session-key") + 1]
+    assert FakeProcess.instances[0].command[FakeProcess.instances[0].command.index("--session-key") + 1] == FakeProcess.instances[-1].command[FakeProcess.instances[-1].command.index("--session-key") + 1]
 
 
 def test_followups_queue_without_interrupting_or_leaking_into_current_turn(tmp_path):

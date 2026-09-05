@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Archive, Check, Crown, DoorOpen, LogOut, MessageSquare, Pause, Play, RefreshCw, Send, Settings, ShieldCheck, Trash2, UserPlus, Users, X } from 'lucide-react'
+import { AlertTriangle, Archive, Check, Clock3, Crown, DoorOpen, LogOut, MessageSquare, Pause, Play, Radio, RefreshCw, Send, Settings, ShieldCheck, Trash2, UserPlus, Users, X } from 'lucide-react'
 import { yushufangApi, type ChatAttachment, type YushufangOfficial, type YushufangResult, type YushufangRoom } from '../api'
 import { useStore } from '../store'
 import ChatComposer, { AttachmentList } from './ChatComposer'
@@ -170,6 +170,16 @@ export default function Yushufang() {
     }
     return Boolean(result?.ok)
   }
+  const askProgress = async (agentId: string) => {
+    if (!room || !active) return
+    const official = participants.find((item) => item.id === agentId)
+    const result = await run(`progress:${agentId}`, () => yushufangApi.askProgress(room.roomId, agentId))
+    if (result?.ok) {
+      setNotice(result.duplicate
+        ? `${name(official || { id: agentId, name: agentId })}已有一条进度询问在处理中。`
+        : `已召见${name(official || { id: agentId, name: agentId })}，正在读取同一工作会话的最新进展。`)
+    }
+  }
   const beginRoom = (mode: 'prince' | 'ministers') => {
     if (activeRoom) {
       selectRoom(activeRoom)
@@ -265,11 +275,41 @@ export default function Yushufang() {
             {failed && <div className="yushu-alert error" role="alert"><AlertTriangle size={16} aria-hidden="true" /><span>{room.phase === 'partial_failed' ? '成功答复已保留。' : '本轮未能完成回奏。'} 排队圣谕已暂停，排查下方错误后可重试未完成回奏。</span></div>}
             <div className="yushu-participants"><span className="yushu-subtitle">殿内</span>{participants.map((official) => <span key={official.id} className={`yushu-participant ${room.currentAgentId === official.id ? 'speaking' : ''}`}>{official.id === 'taizi' && <Crown size={13} />}{name(official)}{room.currentAgentId === official.id && <span>回奏中</span>}{active && <button aria-label={`罢黜${name(official)}出殿`} title="罢黜出殿" onClick={() => void run('remove', () => yushufangApi.removeParticipant(room.roomId, official.id))} disabled={Boolean(busy)}><X size={14} /></button>}</span>)}</div>
             {Boolean(room.queue?.length) && <div className="yushu-turn-queue">回奏顺序：{room.queue?.map((id) => participants.find((item) => item.id === id)).filter((item): item is YushufangOfficial => Boolean(item)).map(name).join(' → ')}</div>}
+            <section className="yushu-context" aria-label="Agent 实时工作状态">
+              <div className="panel-title-row">
+                <h3><Radio size={15} />实时工作状态</h3>
+                <span>{room.sharedMemory ? '共享 Agent 主工作会话' : '旧房间隔离会话'}</span>
+              </div>
+              <p className="yushu-context-note">御书房只读取当前工作进度，不会改变原任务；状态每 1.2 秒刷新。</p>
+              <div className="yushu-context-list">
+                {participants.map((official) => {
+                  const context = room.agentContexts?.[official.id]
+                  const request = [...(room.progressRequests || [])].reverse().find((item) => item.agentId === official.id && ['queued', 'running'].includes(item.status))
+                  const progressBusy = busy === `progress:${official.id}` || Boolean(request)
+                  return <article className="yushu-context-entry" key={official.id}>
+                    <div className="yushu-context-head">
+                      <strong>{name(official)}</strong>
+                      <span className={`yushu-context-status ${context?.busy ? 'working' : 'idle'}`}>
+                        {context?.busy ? <Radio size={12} /> : <Clock3 size={12} />}{context?.busy ? '工作中' : '待命'}
+                      </span>
+                    </div>
+                    <p>{context?.progress || '暂无可读取的工作进度。'}</p>
+                    <div className="yushu-context-meta">
+                      <span>{context?.sourceTaskId ? `原任务 ${context.sourceTaskId}` : 'Agent 主工作会话'}</span>
+                      <span>{context?.lastActiveAt ? `最近更新 ${time(context.lastActiveAt)}` : '暂无活动时间'}</span>
+                    </div>
+                    {active && <button className="btn btn-g" type="button" onClick={() => void askProgress(official.id)} disabled={Boolean(busy) || !runtime?.ok || progressBusy}>
+                      <Radio size={13} />{request ? (request.status === 'running' ? '询问中…' : '已排队') : '询问进度'}
+                    </button>}
+                  </article>
+                })}
+              </div>
+            </section>
             {room.capabilities && <details className="yushu-capabilities"><summary>本场实际配置</summary>{Object.entries(room.capabilities).map(([id, config]) => <div key={id}><strong>{officials.find((item) => item.id === id)?.name || id}</strong><span>模型：{config.resolvedModel || config.model}{config.resolvedModel ? ' · 已回执' : ' · 待模型回执'}</span><span>Skills：{config.skills.join('、') || '无'}</span><span>网页搜索：{config.webSearch ? '开放' : '关闭'} · 网页读取：{config.webFetch ? '开放' : '关闭'}</span><span>MCP 资源读取：{config.mcpServers.join('、') || '无已配置服务'}</span><span>命令、文件写入、任务派发：议事中禁用</span></div>)}</details>}
 
             {room.capabilities && <div className="yushu-turn-queue" role="status" aria-label="实际思考深度">{Object.entries(room.capabilities).filter(([, config]) => config.effectiveThinking).map(([id, config]) => <span key={id}>{officials.find((item) => item.id === id)?.name || id} · 思考 {config.requestedThinking}{config.requestedThinking !== config.effectiveThinking ? `（实际参数 ${config.effectiveThinking}）` : ''} </span>)}</div>}
             <div className="yushu-messages" ref={messagesRef} role="log" aria-label="议事记录">
-              {room.messages.map((item, index) => <div key={index} className={`yushu-message ${item.type}`}><div className="yushu-message-meta"><strong>{item.type === 'emperor' ? '皇上' : item.type === 'system' ? '司礼监' : item.type === 'error' ? '运行错误' : item.officialName || item.officialId || '臣子'}</strong><time>{time(item.createdAt)}</time></div><div className="yushu-message-body">{item.content}</div><AttachmentList scope={room.roomId} files={item.attachments} /></div>)}
+              {room.messages.map((item, index) => <div key={item.id || `${item.type}-${item.createdAt || index}`} className={`yushu-message ${item.type}`}><div className="yushu-message-meta"><strong>{item.type === 'emperor' ? '皇上' : item.type === 'system' ? '司礼监' : item.type === 'error' ? '运行错误' : item.type === 'progress' ? '进度回奏' : item.officialName || item.officialId || '臣子'}</strong><time>{time(item.createdAt)}</time></div><div className="yushu-message-body">{item.content}</div><AttachmentList scope={room.roomId} files={item.attachments} /></div>)}
               {running && <div className="yushu-typing" role="status">{room.currentAgentId ? `${participants.find((item) => item.id === room.currentAgentId)?.name || room.currentAgentId} 正在回奏…` : '正在准备本轮回奏…'}</div>}
             </div>
             {Boolean(room.toolActivity?.length) && <details className="yushu-capabilities"><summary>工具活动 · {room.toolActivity?.length}</summary>{room.toolActivity?.map((item, index) => <div key={index}><span>{time(item.at)} · {officials.find((official) => official.id === item.agentId)?.name || item.agentId} · {item.tool} · {item.state === 'error' ? '失败或已拦截' : item.state === 'completed' ? '已完成' : '调用中'}</span></div>)}</details>}

@@ -33,6 +33,7 @@ export const api = {
   morningBrief: () => fetchJ<MorningBrief>(`${API_BASE}/api/morning-brief`),
   morningConfig: () => fetchJ<SubConfig>(`${API_BASE}/api/morning-config`),
   agentsStatus: () => fetchJ<AgentsStatusData>(`${API_BASE}/api/agents-status`),
+  readiness: () => fetchJ<ReadinessData>(`${API_BASE}/api/readiness`),
 
   // 任务实时动态
   taskActivity: (id: string) =>
@@ -268,6 +269,22 @@ export interface AgentsStatusData {
   checkedAt: string;
 }
 
+export interface ReadinessCheck {
+  id: string;
+  label: string;
+  ready: boolean;
+  detail: string;
+}
+
+export interface ReadinessData {
+  ok: boolean;
+  ready: boolean;
+  checks: ReadinessCheck[];
+  next?: string;
+  checkedAt?: string;
+  error?: string;
+}
+
 export interface MorningNewsItem {
   title: string;
   summary?: string;
@@ -454,11 +471,13 @@ export interface YushufangOfficial {
 }
 
 export interface YushufangMessage {
-  type: 'system' | 'emperor' | 'official' | 'scene' | 'approval' | string;
+  id?: string;
+  type: 'system' | 'emperor' | 'official' | 'progress' | 'error' | 'scene' | 'approval' | string;
   content: string;
   attachments?: ChatAttachment[];
   officialId?: string;
   officialName?: string;
+  runId?: string;
   status?: string;
   createdAt?: string;
   proposedActions?: Array<{ id: string; title: string; detail?: string; requiresApproval?: boolean }>;
@@ -469,8 +488,12 @@ export interface YushufangRoom {
   audience?: 'prince' | 'ministers';
   topic: string;
   phase: 'idle' | 'running' | 'waiting' | 'concluded' | 'cancelled' | 'interrupted' | 'archived' | string;
+  sessionMode?: 'shared' | 'isolated' | string;
+  sharedMemory?: boolean;
   participants: YushufangOfficial[];
   messages: YushufangMessage[];
+  agentContexts?: Record<string, YushufangAgentContext>;
+  progressRequests?: YushufangProgressRequest[];
   queue?: string[];
   failedAgentIds?: string[];
   pendingMessages?: Array<{ id: string; content: string; attachments?: ChatAttachment[] }>;
@@ -502,6 +525,34 @@ export interface YushufangRoom {
   updatedAt?: string;
 }
 
+export interface YushufangAgentContext {
+  agentId: string;
+  status: 'working' | 'idle' | string;
+  busy: boolean;
+  lastActiveAt?: string | null;
+  ageMs?: number | null;
+  progress: string;
+  lastUserRequest?: string;
+  sourceTaskId?: string | null;
+  source?: string;
+  sessionKey?: string;
+  memoryScope?: string;
+}
+
+export interface YushufangProgressRequest {
+  id: string;
+  agentId: string;
+  question: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'interrupted' | string;
+  mode: 'read-only' | string;
+  sessionKey?: string;
+  snapshot?: YushufangAgentContext;
+  response?: string;
+  error?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface YushufangResult {
   ok: boolean;
   room?: YushufangRoom;
@@ -509,6 +560,9 @@ export interface YushufangResult {
   officials?: YushufangOfficial[];
   agents?: YushufangOfficial[];
   queued?: boolean;
+  duplicate?: boolean;
+  requestId?: string;
+  request?: YushufangProgressRequest;
   message?: string;
   error?: string;
 }
@@ -525,6 +579,8 @@ export const yushufangApi = {
     postJ<YushufangResult>(`${API_BASE}/api/yushufang/remove-queued`, { roomId, messageId }),
   speak: (roomId: string, message: string, attachmentIds: string[] = [], thinkingDefault?: string) =>
     postJ<YushufangResult>(`${API_BASE}/api/yushufang/speak`, { roomId, message, attachmentIds, thinkingDefault }),
+  askProgress: (roomId: string, agentId: string, question?: string) =>
+    postJ<YushufangResult>(`${API_BASE}/api/yushufang/ask-progress`, { roomId, agentId, question }),
   removeParticipant: (roomId: string, agentId: string) =>
     postJ<YushufangResult>(`${API_BASE}/api/yushufang/remove-participant`, { roomId, agentId }),
   cancel: (roomId: string) => postJ<YushufangResult>(`${API_BASE}/api/yushufang/cancel`, { roomId }),

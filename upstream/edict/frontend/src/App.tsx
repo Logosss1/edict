@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { api, type ReadinessData } from './api';
 import { useStore, TAB_DEFS, startPolling, stopPolling, isEdict, isArchived } from './store';
 import EdictBoard from './components/EdictBoard';
 import MonitorPanel from './components/MonitorPanel';
@@ -22,6 +23,7 @@ export default function App() {
   const liveStatus = useStore((s) => s.liveStatus);
   const countdown = useStore((s) => s.countdown);
   const loadAll = useStore((s) => s.loadAll);
+  const [readiness, setReadiness] = useState<ReadinessData | null>(null);
 
   useEffect(() => {
     startPolling();
@@ -32,6 +34,25 @@ export default function App() {
     const bridge = (window as Window & { edictDesktop?: { onModelSettings?: (callback: () => void) => () => void } }).edictDesktop;
     return bridge?.onModelSettings?.(() => setActiveTab('models'));
   }, [setActiveTab]);
+
+  useEffect(() => {
+    let mounted = true;
+    const refresh = async () => {
+      try {
+        const result = await api.readiness();
+        if (mounted) setReadiness(result);
+      } catch {
+        // The existing sync chip remains the source of truth when the
+        // readiness endpoint is not reachable yet.
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 6000);
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   // Compute header chips
   const tasks = liveStatus?.tasks || [];
@@ -89,6 +110,19 @@ export default function App() {
           </button>
         ))}
       </div>
+
+      {readiness && !readiness.ready && <section className="readiness-banner" role="status" aria-label="首次配置状态">
+        <div className="readiness-copy">
+          <strong>首次使用还差一步</strong>
+          <span>{readiness.next || '请打开设置完成供应商和 Agent 模型配置。'}</span>
+          {readiness.checks.filter((check) => !check.ready).length > 0 && <ul>
+            {readiness.checks.filter((check) => !check.ready).map((check) => <li key={check.id}>{check.label}：{check.detail}</li>)}
+          </ul>}
+        </div>
+        {window.edictDesktop?.openSettings && <button className="btn btn-g" type="button" onClick={() => void window.edictDesktop?.openSettings?.()}>
+          打开设置完成配置
+        </button>}
+      </section>}
 
       {/* ── Panels ── */}
       {activeTab === 'edicts' && <EdictBoard />}

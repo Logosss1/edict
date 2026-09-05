@@ -89,6 +89,37 @@ def test_runtime_isolated_model_and_native_tool_policy(tmp_path):
     assert not (root / "workspace" / "MEMORY.md").exists()
 
 
+def test_runtime_shared_mode_reuses_canonical_workspace_without_cleaning_it(tmp_path):
+    source = source_config(tmp_path)
+    workspace = tmp_path / "ordinary-workspace"
+    session_store = tmp_path / "canonical-home" / "agents" / "alpha" / "sessions" / "sessions.json"
+    state_dir = tmp_path / "canonical-home"
+
+    config, env, summary = prepare_runtime(
+        tmp_path / "room" / "alpha",
+        "alpha",
+        source,
+        shared_session=True,
+        session_store=session_store,
+        state_dir=state_dir,
+    )
+
+    assert summary["sessionMode"] == "shared"
+    assert summary["memoryAccess"] == "canonical-agent-memory-read-only"
+    assert config["agents"]["defaults"]["workspace"] == str(workspace)
+    assert config["session"]["store"] == str(session_store)
+    assert config["tools"]["fs"]["workspaceOnly"] is True
+    assert "memory_search" in config["tools"]["allow"]
+    assert "memory_get" in config["tools"]["allow"]
+    assert "memory_search" not in config["tools"]["deny"]
+    assert "memory_get" not in config["tools"]["deny"]
+    assert env["OPENCLAW_STATE_DIR"] == str(state_dir)
+    assert env["OPENCLAW_HOME"] == str(state_dir)
+    assert (workspace / "skills" / "review" / "SKILL.md").exists()
+    assert (workspace / "skills" / "review" / "danger.sh").exists()
+    assert (workspace / "MEMORY.md").read_text(encoding="utf-8") == "PRIVATE_OTHER_ROOM"
+
+
 def test_existing_env_secret_ref_is_materialized_to_child_env_marker(tmp_path):
     source = source_config(tmp_path)
     config = json.loads(source.read_text())

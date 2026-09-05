@@ -1,4 +1,11 @@
-"""Build a per-room read-only OpenClaw configuration without changing its source."""
+"""Build a bounded OpenClaw configuration for 御书房 turns.
+
+New rooms can attach to an Agent's canonical ``agent:<id>:main`` session. The
+configuration remains room-local so tool policy is still constrained, while
+the session store, state directory and Agent workspace point at the same
+working context used by ordinary EDICT dispatches. Legacy rooms continue to
+use their isolated room session.
+"""
 from __future__ import annotations
 
 import copy
@@ -16,7 +23,7 @@ READ_OPERATIONS = ["resources_list", "resources_read", "prompts_list", "prompts_
 DENIED_TOOLS = [
     "exec", "process", "write", "edit", "apply_patch", "browser", "canvas", "nodes",
     "cron", "gateway", "message", "sessions_send", "sessions_spawn", "sessions_list",
-    "sessions_history", "subagents", "memory_search", "memory_get",
+    "sessions_history", "subagents",
 ]
 
 # OpenClaw treats a known provider environment name (for example
@@ -56,7 +63,15 @@ def resolve_thinking(thinking: str, capability: dict) -> str:
     return capability.get("mapping", {}).get(thinking, "off" if thinking == "none" else thinking)
 
 
-def prepare_runtime(root: pathlib.Path, agent_id: str, source_path: pathlib.Path) -> tuple[dict, dict, dict]:
+def prepare_runtime(
+    root: pathlib.Path,
+    agent_id: str,
+    source_path: pathlib.Path,
+    *,
+    shared_session: bool = False,
+    session_store: pathlib.Path | None = None,
+    state_dir: pathlib.Path | None = None,
+) -> tuple[dict, dict, dict]:
     """Return config, child env, and a non-secret capability summary.
 
     Only research tools survive. MCP is limited to protocol resource/prompt
@@ -84,7 +99,15 @@ def prepare_runtime(root: pathlib.Path, agent_id: str, source_path: pathlib.Path
         provider["baseUrl"] = _normalize_openai_base_url(provider.get("baseUrl", ""))
 
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    workspace = root / "workspace"
+    original_workspace = pathlib.Path(agent.get("workspace") or defaults.get("workspace") or source_path.parent / f"workspace-{agent_id}").expanduser()
+    # Shared turns use the same Agent workspace as ordinary EDICT dispatches
+    # so the current task context and memory remain visible. The room config
+    # still denies every mutating tool, so the summon is observational.
+    # Shared turns must point at the canonical Agent workspace even when it
+    # has not been created yet.  Creating the directory is safe; silently
+    # falling back to a room-local workspace would make the supposed shared
+    # memory boundary misleading.
+    workspace = original_workspace if shared_session else root / "workspace"
     workspace.mkdir(exist_ok=True, mode=0o700)
     environment = dict(os.environ)
     api_key = provider.get("apiKey")
@@ -128,32 +151,44 @@ def prepare_runtime(root: pathlib.Path, agent_id: str, source_path: pathlib.Path
     for entry in provider.get("models", []):
         entry["agentRuntime"] = {"id": "openclaw"}
 
-    original_workspace = pathlib.Path(agent.get("workspace") or defaults.get("workspace") or source_path.parent / f"workspace-{agent_id}").expanduser()
     allowed_skills = agent.get("skills")
     copied_skills = []
-    staged_skills = workspace / "skills"
-    if staged_skills.exists():
-        shutil.rmtree(staged_skills)
     skill_root = original_workspace / "skills"
     if skill_root.is_dir() and not skill_root.is_symlink():
-        for skill in sorted(skill_root.iterdir()):
-            if not skill.is_dir() or skill.is_symlink() or (isinstance(allowed_skills, list) and skill.name not in allowed_skills):
-                continue
-            skill_doc = skill / "SKILL.md"
-            if skill_doc.is_file() and not skill_doc.is_symlink():
-                destination = workspace / "skills" / skill.name
-                destination.mkdir(parents=True, exist_ok=True, mode=0o700)
-                # Copy text references only. Never import scripts, memories,
-                # credentials, symlinks, or another room's conversation.
-                for document in skill.rglob("*.md"):
-                    if document.is_symlink() or document.stat().st_size > 256_000:
-                        continue
-                    if document.resolve().is_relative_to(skill.resolve()):
-                        target = destination / document.relative_to(skill)
-                        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                        target.write_text(document.read_text(encoding="utf-8"), encoding="utf-8")
-                        target.chmod(0o600)
-                copied_skills.append(skill.name)
+        if shared_session:
+            # Never delete or rewrite the canonical workspace.  The shared
+            # room is observational and can read the already-installed skill
+            # documents, while every mutating tool remains denied below.
+            copied_skills = [
+                skill.name for skill in sorted(skill_root.iterdir())
+                if skill.is_dir()
+                and not skill.is_symlink()
+                and (not isinstance(allowed_skills, list) or skill.name in allowed_skills)
+                and (skill / "SKILL.md").is_file()
+                and not (skill / "SKILL.md").is_symlink()
+            ]
+        else:
+            staged_skills = workspace / "skills"
+            if staged_skills.exists():
+                shutil.rmtree(staged_skills)
+            for skill in sorted(skill_root.iterdir()):
+                if not skill.is_dir() or skill.is_symlink() or (isinstance(allowed_skills, list) and skill.name not in allowed_skills):
+                    continue
+                skill_doc = skill / "SKILL.md"
+                if skill_doc.is_file() and not skill_doc.is_symlink():
+                    destination = workspace / "skills" / skill.name
+                    destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    # Copy text references only. Never import scripts, memories,
+                    # credentials, symlinks, or another room's conversation.
+                    for document in skill.rglob("*.md"):
+                        if document.is_symlink() or document.stat().st_size > 256_000:
+                            continue
+                        if document.resolve().is_relative_to(skill.resolve()):
+                            target = destination / document.relative_to(skill)
+                            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                            target.write_text(document.read_text(encoding="utf-8"), encoding="utf-8")
+                            target.chmod(0o600)
+                    copied_skills.append(skill.name)
 
     servers = {}
     for server_name, original in source.get("mcp", {}).get("servers", {}).items():
@@ -186,6 +221,9 @@ def prepare_runtime(root: pathlib.Path, agent_id: str, source_path: pathlib.Path
         # OpenClaw declares this plugin policy entry only when at least one
         # enabled MCP server is materialized for the child runtime.
         allowed_tools.append("bundle-mcp")
+    safe_denied_tools = [item for item in DENIED_TOOLS if item not in {"memory_search", "memory_get"}]
+    if not shared_session:
+        safe_denied_tools.extend(["memory_search", "memory_get"])
     config = {
         "models": {"mode": "replace", "providers": {provider_id: provider}},
         "secrets": {"providers": {"default": {"source": "env"}}},
@@ -194,7 +232,7 @@ def prepare_runtime(root: pathlib.Path, agent_id: str, source_path: pathlib.Path
                 "model": {"primary": model, "fallbacks": []},
                 "models": {model: {"agentRuntime": {"id": "openclaw"}}},
                 "workspace": str(workspace), "skipBootstrap": True,
-                "memorySearch": {"enabled": False},
+                "memorySearch": {"enabled": bool(shared_session)},
                 "compaction": {"memoryFlush": {"enabled": False}},
             },
             "list": [{
@@ -204,26 +242,29 @@ def prepare_runtime(root: pathlib.Path, agent_id: str, source_path: pathlib.Path
             }],
         },
         "tools": {
-            "profile": "full", "allow": allowed_tools,
-            "deny": DENIED_TOOLS, "fs": {"workspaceOnly": True},
+            "profile": "full", "allow": allowed_tools + (["memory_search", "memory_get"] if shared_session else []),
+            "deny": safe_denied_tools, "fs": {"workspaceOnly": True},
             "exec": {"security": "deny"}, "elevated": {"enabled": False}, "web": web,
         },
         "mcp": {"servers": servers},
-        "session": {"store": str(root / "sessions.json")},
+        "session": {"store": str(session_store or root / "sessions.json")},
         "logging": {"level": "silent"},
     }
     path = root / "openclaw.json"
     atomic_json_write(path, config)
     path.chmod(0o600)
+    canonical_state_dir = pathlib.Path(state_dir or source_path.parent).expanduser()
     environment.update({
         "OPENCLAW_CONFIG_PATH": str(path),
-        "OPENCLAW_STATE_DIR": str(root / "state"),
-        "OPENCLAW_HOME": str(root),
-        "EDICT_OPENCLAW_HOME": str(root),
+        "OPENCLAW_STATE_DIR": str(canonical_state_dir if shared_session else root / "state"),
+        "OPENCLAW_HOME": str(canonical_state_dir if shared_session else root),
+        "EDICT_OPENCLAW_HOME": str(canonical_state_dir if shared_session else root),
     })
     summary = {
         "model": model, "skills": copied_skills, "mcpServers": list(servers),
         "mcpPolicy": "resource-and-prompt-read-only",
+        "sessionMode": "shared" if shared_session else "isolated",
+        "memoryAccess": "canonical-agent-memory-read-only" if shared_session else "room-isolated",
         "webSearch": web.get("search", {}).get("enabled", True),
         "webFetch": web.get("fetch", {}).get("enabled", True),
         "execution": "denied-during-deliberation",

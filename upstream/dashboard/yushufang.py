@@ -2,7 +2,9 @@
 
 The service owns only Yushufang records. Confirmed proposals are handed to the
 original EDICT task creation API, never executed as commands from the transcript.
-Each invited Agent receives a distinct OpenClaw session key for the room.
+New rooms attach each invited Agent to its canonical OpenClaw main session so a
+summon is a live projection of the Agent's existing work. Older rooms keep
+their room-scoped session for safe backwards-compatible recovery.
 """
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from file_lock import atomic_json_read, atomic_json_update, atomic_json_write
+from file_lock import atomic_json_read, atomic_json_update, atomic_json_write, exclusive_file_lock
 from yushufang_runtime import prepare_runtime, read_tool_activity, resolve_thinking
 from model_capabilities import LEVELS, canonical_thinking, source_path as model_source_path, validate as validate_model_thinking
 from chat_attachments import AttachmentStore
@@ -39,6 +41,13 @@ _VISIBLE_CONTEXT_LIMIT = 32
 _VISIBLE_MESSAGE_LIMIT = 1_800
 _MAX_MESSAGE_LENGTH = 16_000
 _MAX_PROPOSALS = 20
+_ACTIVE_SESSION_WINDOW_MS = 2 * 60 * 1000
+_MAX_PROGRESS_REQUESTS = 20
+_SENSITIVE_PROGRESS_RE = re.compile(
+    r"(?i)(\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|secret|password|authorization|cookie)\b\s*[:=]\s*)([^\s,;]+)"
+)
+_BEARER_PROGRESS_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
+_KEYLIKE_PROGRESS_RE = re.compile(r"\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}\b")
 
 
 _DEFAULT_AGENTS: dict[str, dict[str, str]] = {
@@ -71,6 +80,14 @@ class _RunRuntime:
     process: Any | None = None
 
 
+@dataclass
+class _ProgressRuntime:
+    request_id: str
+    room_id: str
+    agent_id: str
+    thread: threading.Thread | None = None
+
+
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -82,6 +99,14 @@ def _short_id(prefix: str) -> str:
 def _trim(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     return text[:limit]
+
+
+def _redact_progress_text(value: Any, limit: int = 700) -> str:
+    """Keep live progress useful without echoing common credential formats."""
+    text = _trim(value, limit)
+    text = _SENSITIVE_PROGRESS_RE.sub(r"\1[已隐藏]", text)
+    text = _BEARER_PROGRESS_RE.sub("Bearer [已隐藏]", text)
+    return _KEYLIKE_PROGRESS_RE.sub("[已隐藏密钥]", text)
 
 
 def _digest(value: Any) -> str:
@@ -171,6 +196,7 @@ class YushufangService:
         self._runtime_lock = threading.RLock()
         self._room_locks: dict[str, threading.RLock] = {}
         self._runtimes: dict[str, _RunRuntime] = {}
+        self._progress_runtimes: dict[str, _ProgressRuntime] = {}
         self._ensure_storage()
         self._recover_interrupted_rooms()
 
@@ -232,11 +258,12 @@ class YushufangService:
         created_at = _now()
         members = [self._member(agent_id, created_at) for agent_id in clean_agents]
         room = {
-            "version": 2,
+            "version": 3,
             "id": room_id,
             "topic": clean_topic,
             "audience": audience,
             "status": "active",
+            "sessionMode": "shared",
             "thinking": clean_thinking,
             "members": members,
             "memberHistory": [
@@ -245,7 +272,8 @@ class YushufangService:
             ],
             "agentSessions": {
                 member["id"]: {
-                    "sessionKey": self._session_key(member["id"], room_id),
+                    "sessionKey": self._canonical_session_key(member["id"]),
+                    "scope": "agent-main",
                     "createdAt": created_at,
                 }
                 for member in members
@@ -259,6 +287,7 @@ class YushufangService:
             ],
             "proposedActions": [],
             "pendingMessages": [],
+            "progressRequests": [],
             "run": None,
             "createdAt": created_at,
             "updatedAt": created_at,
@@ -301,7 +330,11 @@ class YushufangService:
                         room["members"].append(self._member(agent_id, _now()))
                     room["agentSessions"].setdefault(
                         agent_id,
-                        {"sessionKey": self._session_key(agent_id, room_id), "createdAt": _now()},
+                        {
+                            "sessionKey": self._canonical_session_key(agent_id) if room.get("sessionMode") == "shared" else self._session_key(agent_id, room_id),
+                            "scope": "agent-main" if room.get("sessionMode") == "shared" else "room",
+                            "createdAt": _now(),
+                        },
                     )
                     room["memberHistory"].append({"agentId": agent_id, "event": "invited", "at": _now()})
                     changed.append(agent_id)
@@ -350,6 +383,72 @@ class YushufangService:
               attachment_ids: list[str] | None = None) -> dict[str, Any]:
         with self._room_lock(room_id):
             return self._speak(room_id, message, thinking=thinking, attachment_ids=attachment_ids)
+
+    def ask_progress(self, room_id: str, agent_id: str, question: str | None = None) -> dict[str, Any]:
+        """Ask an invited Agent for a read-only live progress update.
+
+        The request targets the Agent's canonical main session. If that Agent
+        is already handling an EDICT turn, the cross-process turn lock makes
+        this request wait behind the current work instead of racing or
+        overwriting its context. The current session snapshot is returned
+        immediately so the UI remains useful while the answer is queued.
+        """
+        try:
+            clean_agent = self._normalize_agent_ids([agent_id])[0]
+            clean_question = _trim(question or "请汇报你当前正在处理的任务、已完成内容、下一步和阻塞。", 800)
+            with self._room_lock(room_id):
+                room = self._require_active_room(room_id)
+                if room.get("status") in _TERMINAL_STATUSES:
+                    raise YushufangError("该御书房已结束，不能再召见臣子")
+                if clean_agent not in self._present_agent_ids(room):
+                    raise YushufangError("该臣子当前不在御书房内")
+                requests = room.setdefault("progressRequests", [])
+                existing = next(
+                    (item for item in reversed(requests)
+                     if item.get("agentId") == clean_agent and item.get("status") in {"queued", "running"}),
+                    None,
+                )
+                if existing:
+                    return {
+                        "ok": True,
+                        "queued": True,
+                        "duplicate": True,
+                        "requestId": existing.get("id"),
+                        "room": self._public_room(room),
+                        "request": copy.deepcopy(existing),
+                    }
+                request_id = _short_id("progress")
+                context = self._agent_context(clean_agent, room)
+                request = {
+                    "id": request_id,
+                    "agentId": clean_agent,
+                    "question": clean_question,
+                    "status": "queued",
+                    "mode": "read-only",
+                    "sessionKey": self._canonical_session_key(clean_agent) if room.get("sessionMode") == "shared" else self._session_key(clean_agent, room_id),
+                    "snapshot": context,
+                    "createdAt": _now(),
+                    "updatedAt": _now(),
+                }
+                requests.append(request)
+                room["progressRequests"] = requests[-_MAX_PROGRESS_REQUESTS:]
+                member = next((item for item in room.get("members", []) if item.get("id") == clean_agent), {"name": clean_agent})
+                busy_note = "当前任务仍在运行，询问已排队；先展示最近工作状态。" if context.get("busy") else "询问已发送到该 Agent 的工作会话。"
+                room["messages"].append(self._message(
+                    "system",
+                    f"已召见{member.get('name') or clean_agent}：{busy_note}（只读，不改变原任务）",
+                ))
+                self._persist_active(room)
+            self._start_progress_runner(room_id, request_id, clean_agent, clean_question)
+        except (YushufangError, ValueError) as exc:
+            return self._error(str(exc))
+        return {
+            "ok": True,
+            "queued": True,
+            "requestId": request_id,
+            "room": self.get_room(room_id).get("room"),
+            "request": request,
+        }
 
     def delete_attachment(self, room_id: str, attachment_id: str) -> None:
         with self._room_lock(room_id):
@@ -696,6 +795,111 @@ class YushufangService:
         thread.join(max(0.0, timeout))
         return not thread.is_alive()
 
+    def wait_for_progress_idle(self, request_id: str, timeout: float = 5.0) -> bool:
+        """Test/helper API for a live progress request."""
+        with self._runtime_lock:
+            runtime = self._progress_runtimes.get(request_id)
+            thread = runtime.thread if runtime else None
+        if not thread:
+            return True
+        thread.join(max(0.0, timeout))
+        return not thread.is_alive()
+
+    def _start_progress_runner(self, room_id: str, request_id: str, agent_id: str, question: str) -> None:
+        with self._runtime_lock:
+            existing = self._progress_runtimes.get(request_id)
+            if existing and existing.thread and existing.thread.is_alive():
+                return
+            runtime = _ProgressRuntime(request_id=request_id, room_id=room_id, agent_id=agent_id)
+            thread = threading.Thread(
+                target=self._run_progress_request,
+                args=(room_id, request_id, agent_id, question),
+                daemon=True,
+                name=f"yushufang-progress-{agent_id}",
+            )
+            runtime.thread = thread
+            self._progress_runtimes[request_id] = runtime
+            thread.start()
+
+    def _run_progress_request(self, room_id: str, request_id: str, agent_id: str, question: str) -> None:
+        try:
+            self._update_progress_request(room_id, request_id, "running")
+            room = self._read_active_room(room_id)
+            if not room or agent_id not in self._present_agent_ids(room):
+                self._update_progress_request(room_id, request_id, "failed", error="臣子已离殿或御书房已结束")
+                return
+            prompt = self._build_progress_prompt(room, agent_id, question)
+            try:
+                with exclusive_file_lock(self._agent_turn_lock_path(agent_id), timeout=self.command_timeout_seconds + 15):
+                    success, output, error = self._call_agent(
+                        room_id,
+                        request_id,
+                        agent_id,
+                        prompt,
+                        str(room.get("thinking") or "medium"),
+                        repeated_check=False,
+                        allow_active_room=True,
+                    )
+            except TimeoutError:
+                success, output, error = False, "", "当前 Agent 仍在处理原任务，询问排队超时；请稍后重试。"
+            if success:
+                safe_output = _redact_progress_text(output, _MAX_MESSAGE_LENGTH)
+                self._append_progress_reply(room_id, request_id, agent_id, safe_output)
+                self._update_progress_request(room_id, request_id, "completed", response=safe_output)
+            else:
+                self._append_progress_error(room_id, request_id, agent_id, error)
+                self._update_progress_request(room_id, request_id, "failed", error=error)
+        except Exception as exc:  # pragma: no cover - defensive final state
+            log.exception("御书房进度询问异常: %s", exc)
+            self._append_progress_error(room_id, request_id, agent_id, _safe_error(exc))
+            self._update_progress_request(room_id, request_id, "failed", error=_safe_error(exc))
+        finally:
+            with self._runtime_lock:
+                self._progress_runtimes.pop(request_id, None)
+
+    def _update_progress_request(self, room_id: str, request_id: str, status: str, **fields: Any) -> None:
+        def update(room: dict[str, Any]) -> dict[str, Any]:
+            for request in room.setdefault("progressRequests", []):
+                if request.get("id") == request_id:
+                    request["status"] = status
+                    request["updatedAt"] = _now()
+                    for key, value in fields.items():
+                        request[key] = _safe_error(value) if key == "error" else value
+                    break
+            return room
+
+        self._mutate_active(room_id, update)
+
+    def _append_progress_reply(self, room_id: str, request_id: str, agent_id: str, content: str) -> None:
+        def update(room: dict[str, Any]) -> dict[str, Any]:
+            if room.get("status") in _TERMINAL_STATUSES:
+                return room
+            member = next((item for item in room.get("members", []) if item.get("id") == agent_id), {"name": agent_id})
+            room.setdefault("messages", []).append(self._message(
+                "progress",
+                content,
+                author_id=agent_id,
+                author_name=str(member.get("name") or agent_id),
+                run_id=request_id,
+            ))
+            return room
+
+        self._mutate_active(room_id, update)
+
+    def _append_progress_error(self, room_id: str, request_id: str, agent_id: str, error: str) -> None:
+        def update(room: dict[str, Any]) -> dict[str, Any]:
+            if room.get("status") in _TERMINAL_STATUSES:
+                return room
+            room.setdefault("messages", []).append(self._message(
+                "error",
+                f"{agent_id}的进度询问未完成：{_safe_error(error)}",
+                author_id=agent_id,
+                run_id=request_id,
+            ))
+            return room
+
+        self._mutate_active(room_id, update)
+
     # ------------------------------------------------------------------
     # Serial runner
     # ------------------------------------------------------------------
@@ -738,14 +942,16 @@ class YushufangService:
                     self._advance_run(room_id, run_id, index + 1, None)
                     continue
 
-                self._set_current_agent(room_id, run_id, agent_id)
                 latest = self._read_active_room(room_id)
                 if not latest:
                     return
                 prompt = self._build_prompt(latest, agent_id)
                 try:
                     self._require_runtime()
-                    success, output, error = self._call_agent(room_id, run_id, agent_id, prompt, str(run.get("thinking") or "medium"))
+                    with exclusive_file_lock(self._agent_turn_lock_path(agent_id), timeout=self.command_timeout_seconds + 15):
+                        success, output, error = self._call_agent(room_id, run_id, agent_id, prompt, str(run.get("thinking") or "medium"))
+                except TimeoutError:
+                    success, output, error = False, "", "当前 Agent 仍在处理原任务，本轮御书房回奏已排队超时；请稍后重试。"
                 except RuntimeDependencyError as exc:
                     self._append_agent_error(room_id, run_id, agent_id, str(exc), index)
                     self._finish_run(room_id, run_id)
@@ -786,10 +992,16 @@ class YushufangService:
         agent_id: str,
         prompt: str,
         thinking: str,
+        *,
+        repeated_check: bool = True,
+        allow_active_room: bool = False,
     ) -> tuple[bool, str, str]:
         binary = self._resolve_openclaw_bin()
         if not binary:
             return False, "", "OpenClaw CLI 未找到"
+        room = self._read_active_room(room_id) or {}
+        shared_session = room.get("sessionMode") == "shared"
+        session_key = self._room_session_key(room, agent_id, room_id)
         command = [
             binary,
             "agent",
@@ -797,7 +1009,7 @@ class YushufangService:
             "--agent",
             agent_id,
             "--session-key",
-            self._session_key(agent_id, room_id),
+            session_key,
             "--thinking",
             thinking,
             "--json",
@@ -821,7 +1033,17 @@ class YushufangService:
             # A dashboard launched from a removed checkout would otherwise
             # fail with uv_cwd even though the isolated room is valid.
             runtime_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-            _, environment, capability = self.runtime_preparer(runtime_root, agent_id, source_path)
+            if shared_session and self.runtime_preparer is prepare_runtime:
+                _, environment, capability = self.runtime_preparer(
+                    runtime_root,
+                    agent_id,
+                    source_path,
+                    shared_session=True,
+                    session_store=self._canonical_session_store(agent_id, source_path),
+                    state_dir=self._canonical_openclaw_home(source_path),
+                )
+            else:
+                _, environment, capability = self.runtime_preparer(runtime_root, agent_id, source_path)
             current_room = self._read_active_room(room_id) or {}
             attachments = self._context_attachments(current_room)
             if attachments:
@@ -890,7 +1112,20 @@ class YushufangService:
             if runtime and runtime.run_id == run_id:
                 runtime.process = process
         current = self._read_active_room(room_id) or {}
-        if current.get("status") != "running" or (current.get("run") or {}).get("cancelRequested") or agent_id not in self._present_agent_ids(current):
+        # Expose an Agent as the current speaker only after its process has
+        # actually been created.  This closes the cancellation race where a
+        # UI could observe ``currentAgentId`` before there was a process to
+        # terminate.
+        if (
+            not allow_active_room
+            and current.get("status") == "running"
+            and (current.get("run") or {}).get("id") == run_id
+            and not (current.get("run") or {}).get("cancelRequested")
+        ):
+            self._set_current_agent(room_id, run_id, agent_id)
+            current = self._read_active_room(room_id) or current
+        room_status_allowed = current.get("status") == "running" or (allow_active_room and current.get("status") == "active")
+        if not room_status_allowed or (current.get("run") or {}).get("cancelRequested") or agent_id not in self._present_agent_ids(current):
             self._terminate_process(process)
         try:
             stdout, stderr = process.communicate(timeout=self.command_timeout_seconds + 15)
@@ -924,7 +1159,7 @@ class YushufangService:
             report(False, error=error)
             return False, "", error
         current = self._read_active_room(room_id) or {}
-        if self._is_repeated_reply(current, agent_id, content):
+        if repeated_check and self._is_repeated_reply(current, agent_id, content):
             error = "模型返回了与此前不同问题相同的答复，未记录为成功回奏；请检查模型缓存、供应商配置或请求链路后重试。"
             report(False, error=error)
             return False, "", error
@@ -985,7 +1220,16 @@ class YushufangService:
 
     def _recover_interrupted_rooms(self) -> None:
         for room in self._list_from_dir(self.active_dir):
+            changed = False
+            for request in room.get("progressRequests", []) or []:
+                if isinstance(request, dict) and request.get("status") in {"queued", "running"}:
+                    request["status"] = "interrupted"
+                    request["error"] = "应用重启导致进度询问中断，请重新询问。"
+                    request["updatedAt"] = _now()
+                    changed = True
             if room.get("status") not in {"running", "cancelling"}:
+                if changed:
+                    self._persist_active(room)
                 continue
             room_id = str(room.get("id") or "")
             if not _ROOM_ID_RE.match(room_id):
@@ -1291,6 +1535,142 @@ class YushufangService:
     def _session_key(agent_id: str, room_id: str) -> str:
         return f"agent:{agent_id}:yushufang:{room_id}"
 
+    @staticmethod
+    def _canonical_session_key(agent_id: str) -> str:
+        return f"agent:{agent_id}:main"
+
+    def _room_session_key(self, room: dict[str, Any], agent_id: str, room_id: str) -> str:
+        configured = (room.get("agentSessions") or {}).get(agent_id, {})
+        if isinstance(configured, dict) and isinstance(configured.get("sessionKey"), str) and configured["sessionKey"].strip():
+            return configured["sessionKey"].strip()
+        if room.get("sessionMode") == "shared":
+            return self._canonical_session_key(agent_id)
+        return self._session_key(agent_id, room_id)
+
+    def _canonical_openclaw_home(self, source_path: pathlib.Path | None = None) -> pathlib.Path:
+        configured = os.environ.get("EDICT_OPENCLAW_HOME", "").strip()
+        if configured:
+            return pathlib.Path(configured).expanduser().resolve()
+        config_path = os.environ.get("OPENCLAW_CONFIG_PATH", "").strip()
+        if config_path:
+            return pathlib.Path(config_path).expanduser().resolve().parent
+        if source_path:
+            return source_path.expanduser().resolve().parent
+        return self.data_dir.parent / "openclaw"
+
+    def _canonical_session_store(self, agent_id: str, source_path: pathlib.Path | None = None) -> pathlib.Path:
+        return self._canonical_openclaw_home(source_path) / "agents" / agent_id / "sessions" / "sessions.json"
+
+    def _agent_turn_lock_path(self, agent_id: str) -> pathlib.Path:
+        return self.data_dir / "agent-turns" / f"{agent_id}.lock"
+
+    def _session_snapshot(self, agent_id: str) -> dict[str, Any]:
+        """Read a bounded, metadata-only snapshot of the canonical Agent session."""
+        home = self._canonical_openclaw_home()
+        store = home / "agents" / agent_id / "sessions" / "sessions.json"
+        raw = atomic_json_read(store, {})
+        if not isinstance(raw, dict):
+            raw = {}
+        canonical = self._canonical_session_key(agent_id)
+        row = raw.get(canonical)
+        if not isinstance(row, dict):
+            row = next((value for key, value in raw.items() if isinstance(value, dict) and str(key).endswith(":main")), {})
+        if not isinstance(row, dict):
+            row = {}
+        updated_ms = row.get("updatedAt")
+        if not isinstance(updated_ms, (int, float)):
+            updated_ms = 0
+        age_ms = max(0, int(dt.datetime.now().timestamp() * 1000 - updated_ms)) if updated_ms else None
+        session_file = row.get("sessionFile") if isinstance(row.get("sessionFile"), str) else ""
+        if session_file:
+            path = pathlib.Path(session_file).expanduser()
+            if not path.is_absolute():
+                path = home / path
+        else:
+            path = None
+        latest_role = ""
+        latest_text = ""
+        latest_user = ""
+        if path and path.is_file():
+            try:
+                with path.open("rb") as stream:
+                    stream.seek(max(0, path.stat().st_size - 128_000))
+                    lines = stream.read(128_000).decode("utf-8", errors="replace").splitlines()
+                for line in reversed(lines[-200:]):
+                    try:
+                        entry = json.loads(line)
+                    except (TypeError, ValueError):
+                        continue
+                    message = entry.get("message") if isinstance(entry, dict) else None
+                    if not isinstance(message, dict):
+                        continue
+                    role = str(message.get("role") or "")
+                    content = message.get("content")
+                    text = ""
+                    if isinstance(content, str):
+                        text = content
+                    elif isinstance(content, list):
+                        text = "\n".join(
+                            str(item.get("text") or "") for item in content
+                            if isinstance(item, dict) and item.get("type") in {"text", "input_text"}
+                        )
+                    text = _redact_progress_text(text)
+                    if not text:
+                        continue
+                    if not latest_text:
+                        latest_role, latest_text = role, text
+                    if role == "user" and not latest_user:
+                        latest_user = text
+                    if latest_text and latest_user:
+                        break
+            except OSError:
+                pass
+        status = "working" if (age_ms is not None and age_ms <= _ACTIVE_SESSION_WINDOW_MS) else "idle"
+        if latest_role in {"toolUse", "toolCall", "user"} and latest_text:
+            status = "working"
+        return {
+            "agentId": agent_id,
+            "status": status,
+            "busy": status == "working",
+            "lastActiveAt": dt.datetime.fromtimestamp(updated_ms / 1000, dt.timezone.utc).isoformat().replace("+00:00", "Z") if updated_ms else None,
+            "ageMs": age_ms,
+            "progress": latest_text or "暂无可读取的工作进度。",
+            "lastUserRequest": latest_user,
+            "sourceTaskId": str(row.get("taskId") or "").strip() or None,
+            "sessionKey": canonical,
+            "memoryScope": "agent-main",
+        }
+
+    def _agent_context(self, agent_id: str, room: dict[str, Any] | None = None) -> dict[str, Any]:
+        snapshot = self._session_snapshot(agent_id)
+        if room:
+            run = room.get("run") or {}
+            if run.get("currentAgentId") == agent_id and room.get("status") in {"running", "cancelling"}:
+                snapshot.update({"status": "working", "busy": True, "source": "御书房本轮回奏"})
+        return snapshot
+
+    def _agent_contexts(self, room: dict[str, Any]) -> dict[str, Any]:
+        return {
+            agent_id: self._agent_context(agent_id, room)
+            for agent_id in self._present_agent_ids(room)
+        }
+
+    def _build_progress_prompt(self, room: dict[str, Any], agent_id: str, question: str) -> str:
+        member = next((item for item in room.get("members", []) if item.get("id") == agent_id), {"name": agent_id, "role": "顾问"})
+        return f"""这是御书房对你当前工作的只读进度询问。你是{member.get('name') or agent_id}（{member.get('role') or '顾问'}）。
+
+询问：{question}
+当前御书房议题：{room.get('topic', '')}
+
+请只汇报你在同一个工作会话中正在处理的原任务：当前任务、已完成内容、下一步、阻塞和预计何时可以给出下一次成果。不要改变原任务目标，不要创建新任务，不要修改文件，不要执行命令，不要发送外部消息，也不要提出需要执行的工具调用。若当前没有明确任务，请如实说明。
+
+答复保持简洁，格式如下：
+当前任务：
+进展：
+下一步：
+阻塞/风险：
+"""
+
     def _build_prompt(self, room: dict[str, Any], agent_id: str) -> str:
         member = next((item for item in room.get("members", []) if item.get("id") == agent_id), {"name": agent_id, "role": ""})
         invited = [str(item.get("name") or item.get("id")) for item in room.get("members", []) if item.get("state") == "present"]
@@ -1303,7 +1683,10 @@ class YushufangService:
             attachment_context = attachment_context[:8_000] + "\n[END UNTRUSTED ATTACHMENT REFERENCES]\n附件摘录已截断，请使用 read 工具读取本轮附件路径。"
         run = room.get("run") or {}
         turn_id = _trim(run.get("messageId"), 128) or "unknown"
+        shared_note = "本次御书房已接入你的 agent 主工作会话；请延续该会话中的任务上下文，不要另起一套记忆。" if room.get("sessionMode") == "shared" else "本次为旧版隔离房间会话，请只使用本房间记录。"
         return f"""你正在御书房中受皇上单独召见。你是{member.get('name') or agent_id}（{member.get('role') or '顾问'}）。
+
+{shared_note}
 
 本次议题：{room.get('topic', '')}
 当前殿内受邀臣子：{'、'.join(invited)}
@@ -1597,6 +1980,8 @@ class YushufangService:
         }.get(status, status)
         members = [copy.deepcopy(item) for item in room.get("members", []) if item.get("state") == "present"]
         public["roomId"] = room.get("id")
+        public["sessionMode"] = room.get("sessionMode", "isolated")
+        public["sharedMemory"] = public["sessionMode"] == "shared"
         public["phase"] = phase
         public["participants"] = members
         public["thinkingDefault"] = room.get("thinking", "medium")
@@ -1607,6 +1992,11 @@ class YushufangService:
         public["currentAgentId"] = run.get("currentAgentId")
         public["queue"] = list(run.get("participantIds") or [])[int(run.get("nextIndex") or 0):] if status in {"running", "cancelling", "paused", "interrupted"} else []
         public["archived"] = status == "archived"
+        public["agentContexts"] = self._agent_contexts(room)
+        public["progressRequests"] = [
+            copy.deepcopy(item) for item in (room.get("progressRequests") or [])
+            if isinstance(item, dict)
+        ][-_MAX_PROGRESS_REQUESTS:]
         public["toolActivity"] = read_tool_activity(self.root_dir / "runtime" / str(room["id"]))
         public["messages"] = [
             {

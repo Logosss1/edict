@@ -19,6 +19,7 @@ import pathlib
 import stat
 import tempfile
 import time
+from contextlib import contextmanager
 from typing import Any, Callable
 
 _IS_WINDOWS = os.name == 'nt'
@@ -57,6 +58,45 @@ def _unlock(fd: int) -> None:
             pass
     else:
         fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+@contextmanager
+def exclusive_file_lock(path: pathlib.Path, timeout: float | None = None):
+    """Hold a cross-process advisory lock for a long-running operation.
+
+    ``atomic_json_*`` protects short JSON mutations.  Agent turns need a
+    longer-lived lock around the OpenClaw process itself so a task dispatch and
+    a live 御书房 summon cannot write to the same canonical session at once.
+    ``timeout`` is intentionally optional: callers that want a queued turn
+    can wait, while diagnostics can request a bounded attempt.
+    """
+    lock_file = pathlib.Path(path)
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR)
+    acquired = False
+    started = time.monotonic()
+    try:
+        if timeout is None:
+            _lock_exclusive(fd)
+            acquired = True
+        else:
+            while True:
+                try:
+                    if _IS_WINDOWS:
+                        _lock_exclusive(fd)
+                    else:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except (BlockingIOError, OSError):
+                    if time.monotonic() - started >= max(0.0, timeout):
+                        raise TimeoutError(f"timed out waiting for lock: {lock_file}")
+                    time.sleep(0.05)
+        yield
+    finally:
+        if acquired:
+            _unlock(fd)
+        os.close(fd)
 
 
 def _migrate_empty_openclaw_lock(lock_file: pathlib.Path) -> None:

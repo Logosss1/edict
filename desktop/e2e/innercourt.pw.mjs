@@ -214,3 +214,17 @@ test('御书房同一时间只允许一场，并可删除已结束密档', async
   await page.getByRole('button', { name: '删除唯一进行中的御书房测试', exact: true }).click()
   await expect(page.locator('.yushu-history')).not.toContainText('唯一进行中的御书房测试')
 })
+
+test('御书房可读取共享主会话并询问 Agent 实时进度', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('tab', { name: '御书房', exact: true }).click()
+  await page.getByRole('checkbox', { name: '中书令', exact: true }).check()
+  await page.getByLabel('议题', { exact: true }).fill('读取共享主会话进度')
+  await page.getByRole('button', { name: '下诏入内', exact: true }).click()
+  await expect(page.locator('.yushu-phase')).toHaveText('待命')
+  await expect(page.locator('.yushu-context')).toContainText('共享 Agent 主工作会话')
+  await expect(page.getByRole('button', { name: '询问进度', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '询问进度', exact: true }).click()
+  await expect(page.getByRole('log')).toContainText('进度回奏', { timeout: 15000 })
+  await expect(page.locator('.yushu-context')).toContainText('Agent 主工作会话')
+})

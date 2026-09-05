@@ -49,6 +49,12 @@ body {
 .tab:hover { color: var(--text); background: var(--panel); }
 .tab.active { color: var(--text); background: var(--panel); border-color: var(--line); font-weight: 600; }
 .tbadge { font-size: 10px; padding: 1px 5px; border-radius: 999px; background: #1a2040; color: var(--acc); margin-left: 4px; }
+.readiness-banner { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin: -4px 0 18px; padding: 12px 14px; border: 1px solid #f5c84266; border-radius: 10px; background: #201a08; color: var(--text); }
+.readiness-copy { min-width: 0; display: grid; gap: 4px; }
+.readiness-copy strong { color: var(--warn); font-size: 13px; }
+.readiness-copy > span { color: #e9d58a; font-size: 11px; line-height: 1.5; }
+.readiness-copy ul { display: grid; gap: 2px; margin: 3px 0 0 16px; color: #cbbd86; font-size: 10px; line-height: 1.45; }
+.readiness-banner .btn { flex: 0 0 auto; }
 
 /* ══ 旨意看板卡片 ══ */
 .edict-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
@@ -905,14 +911,30 @@ code { font-size: 11px; background: var(--panel2); padding: 2px 6px; border-radi
 .yushu-participant button { display: inline-flex; padding: 1px; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
 .yushu-participant button:hover { color: var(--danger); }
 .yushu-speaking-dot, .yushu-typing-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); animation: pulse 1.2s infinite; }
+.yushu-context { margin: 2px 0 13px; padding: 12px 0 13px; border-block: 1px solid var(--line); }
+.yushu-context .panel-title-row h3 { color: var(--acc); }
+.yushu-context-note { margin: 5px 0 10px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.yushu-context-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 7px; }
+.yushu-context-entry { min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); }
+.yushu-context-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.yushu-context-head strong { min-width: 0; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.yushu-context-status { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; font-size: 10px; }
+.yushu-context-status.working { color: var(--warn); }
+.yushu-context-status.idle { color: var(--muted); }
+.yushu-context-entry p { display: -webkit-box; min-height: 36px; margin: 8px 0 7px; overflow: hidden; color: var(--text); font-size: 11px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.yushu-context-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-bottom: 8px; color: var(--muted); font-size: 9px; }
+.yushu-context-entry .btn { min-height: 29px; padding: 5px 8px; font-size: 10px; }
 .yushu-messages { display: flex; flex-direction: column; gap: 8px; max-height: 510px; min-height: 220px; overflow-y: auto; padding: 4px 2px 10px; }
 .yushu-message { max-width: 88%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); }
 .yushu-message.emperor { align-self: flex-end; border-color: #6a9eff66; background: #0f1a38; }
 .yushu-message.official { align-self: flex-start; background: var(--panel); }
+.yushu-message.progress { align-self: flex-start; border-color: #6a9eff66; background: #101d2d; }
 .yushu-message.error { border-color: #ff527055; background: #200a10; }
 .yushu-message-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 10px; }
 .yushu-message-meta strong { color: var(--acc); }
 .yushu-message.official .yushu-message-meta strong { color: var(--ok); }
+.yushu-message.progress .yushu-message-meta strong { color: var(--acc); }
+.yushu-message.error .yushu-message-meta strong { color: var(--danger); }
 .yushu-message-meta time { color: var(--muted); font-size: 9px; }
 .yushu-message-body { white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.55; }
 .yushu-typing { display: inline-flex; align-items: center; gap: 7px; align-self: flex-start; padding: 6px 9px; color: var(--muted); font-size: 10px; }

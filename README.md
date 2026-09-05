@@ -126,9 +126,7 @@ Edict_InnerCourt/
 
 ## 安全边界
 
-- 不要把真实 `.env`、供应商配置、API Key、OpenClaw userData 或运行日志提交到仓库。
 - Release 只包含通用演示数据；每台新电脑都需要在设置页自行配置供应商。
-- 供应商 API Key 不出现在普通界面摘要、源码配置或 Git 历史中。
 - 未签名安装包只应从你确认过的 Release 来源下载。
 
 ## 许可证

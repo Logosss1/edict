@@ -1,107 +1,109 @@
 # Edict_InnerCourt
 
-Edict_InnerCourt 是 EDICT 的桌面化改造版：保留“三省六部”的多 Agent 协作流程，补上可直接分发的 macOS 应用、首次配置向导、独立运行时，以及更明确的内廷议事与记录管理边界。
+English | [中文](README.zh-CN.md)
 
-如果只想在新电脑上使用，直接下载 GitHub Release 中与芯片对应的 ZIP，解压后打开 `Edict_InnerCourt.app` 即可；首次打开后在“设置”中填写自己的供应商地址、密钥和模型。源码仓库适合开发和二次修改，不是无需构建即可双击运行的安装包。
+Edict_InnerCourt is the desktop adaptation of EDICT: it preserves the Three Departments and Six Ministries multi-agent workflow while adding a distributable macOS application, a first-run setup wizard, an independent runtime bundle, and clearer boundaries for Inner Court discussions and record management.
 
-## 参考 EDICT 的核心逻辑
+If you only want to use it on a new computer, download the ZIP for your chip from GitHub Releases, extract it, and open `Edict_InnerCourt.app`. On first launch, open **Settings** and enter your own provider endpoint, API key, and model.
 
-原始项目：[Logosss1/edict](https://github.com/Logosss1/edict)
+## Based on EDICT's core model
 
-本项目沿用原版的组织方式：用户下旨，太子分拣，中书省起草，门下省审议，尚书省派单，再由六部执行并回奏；看板负责呈现任务状态、部门、心跳和结果。桌面版把这套流程收进一个本地应用，并把供应商配置、内廷议事和运行安全集中管理。
+Original upstream project: [cft0808/edict](https://github.com/cft0808/edict)
 
-## 主要改动
+The project keeps EDICT's original organization: the user issues a decree, the Crown Prince triages it, the Secretariat drafts a plan, the Chancellery reviews it, the Department of State Affairs dispatches it, and the Six Ministries execute and report back. The desktop edition brings this workflow into one local application and centralizes provider setup, Inner Court discussions, and runtime safety.
 
-### 1. 从源码项目变成可分发的 macOS 应用
+## What changed
 
-- 提供 Apple Silicon arm64 与 Intel x64 两个安装包。
-- 安装包内置可复现的 Node、Python 和 OpenClaw 运行时，新电脑不必先单独安装这些依赖。
-- 首次启动使用应用自己的数据目录，不读取仓库中的个人运行数据。
-- 默认安全模式不会把演示任务自动发送给 Agent；确认配置无误后，再按需要开启执行。
+### 1. From a source project to a distributable macOS app
 
-### 2. 供应商和模型配置集中到设置页
+- Provides separate Apple Silicon arm64 and Intel x64 packages.
+- Bundles reproducible Node.js, Python, and OpenClaw runtimes, so a new computer does not need to install these dependencies first.
+- Uses the application's own data directory on first launch and does not read personal runtime data from the repository.
+- Safe mode does not automatically send demo tasks to agents. Enable execution only after configuration has been checked.
 
-- 支持 OpenAI 兼容接口的供应商地址、模型发现、模型定义和 Agent 绑定。
-- 支持全局默认模型、逐 Agent 模型、思考深度以及运行时依赖检查。
-- API 密钥只在保存时接收，密钥与普通供应商元数据分开保存，并通过 macOS 安全存储加密。
-- 源码、演示数据、构建产物和 GitHub Release 均不内置个人供应商信息或 API 密钥。
+### 2. Provider and model setup in Settings
 
-### 3. 御书房改为严格的单场对话
+- Supports provider endpoints compatible with the OpenAI API shape, model discovery, custom model definitions, and per-agent model binding.
+- Supports a global default model, per-agent models, thinking depth, and runtime dependency checks.
+- Accepts the API key only when saving; secrets are stored separately from ordinary provider metadata and protected by macOS secure storage.
+- Personal provider details and API keys are not included in the source, demo data, build output, or GitHub Releases.
 
-- 同一时间只能存在一场未结束的御书房议事。
-- 进行中的议事会阻止再次新建，避免多个上下文同时占用同一套内廷运行资源。
-- Agent 的建议不会自动变成任务；需要皇上审批，并经过单独确认后才提交到原有任务 API。
-- 议事结束后，内廷密档可以删除该记录，同时清理对应附件和临时运行目录。
+### 3. A strict single-room Inner Court
 
-### 4. 所有主要历史记录都可控删除
+- Only one unfinished Inner Court discussion can exist at a time.
+- An active discussion prevents another one from being created, avoiding competing contexts and shared runtime resources.
+- Agent suggestions do not automatically become tasks. The user must approve the proposal and explicitly confirm task creation through the existing task API.
+- After a discussion ends, its Inner Court archive can be deleted together with its attachments and temporary runtime directory.
 
-- 内廷密档：可删除已结束的御书房对话。
-- 朝堂议事：可删除已结束的议事记录；进行中的记录不能误删。
-- 旨意看板：可删除已完成或已取消的任务；运行中的任务必须先结束。
-- 奏折阁、任务详情和会话详情：对终态记录提供统一的删除入口。
-- 删除操作有确认提示；进行中的任务、会话和议事保留，避免删除仍在执行的状态。
+### 4. Deletion for major history records
 
-### 5. 附件、错误和运行安全
+- Inner Court archives: delete finished Inner Court discussions.
+- Court Discussions: delete finished multi-agent discussion records; active records cannot be removed accidentally.
+- Task Board: delete completed or cancelled tasks; running tasks must finish first.
+- Memorials, task details, and session details: provide a consistent delete action for terminal records.
+- Every delete action asks for confirmation. Active tasks, sessions, and discussions remain protected.
 
-- 御书房、朝堂议事和普通会话共用文件选择、拖放、粘贴、上传重试和历史下载能力。
-- 附件按房间隔离，限制单文件、单消息和单房间大小。
-- 议事期间禁止命令执行、任意文件写入、跨 Agent 派发和未经允许的任务创建。
-- 失败回合会保留已经成功的回复，暂停未完成队列，并把真实运行错误显示出来。
+### 5. Attachment, error, and runtime safety
 
-## 改造后的整体工作流程
+- Inner Court, Court Discussions, and ordinary sessions share file selection, drag-and-drop, paste, upload retry, and history download support.
+- Attachments are isolated by room, with per-file, per-message, and per-room size limits.
+- During a discussion, command execution, arbitrary file writes, cross-agent dispatch, and unapproved task creation are blocked.
+- Failed turns preserve successful replies, pause unfinished queues, and surface the actual runtime error.
 
-```text
-安装 Release
-    ↓
-首次启动安全模式
-    ↓
-设置：供应商地址 + API 密钥 + 模型
-    ↓
-模型能力检查与 Agent 绑定
-    ↓
-用户下旨
-    ↓
-太子分拣 → 中书省起草 → 门下省审议 → 尚书省派单
-    ↓
-六部执行 → 看板跟踪 → Agent 回奏
-    ↓
-用户查看结果、重试/暂停/取消，或清理已经结束的历史记录
-```
-
-### 御书房工作流
-
-1. 打开“御书房”，创建唯一一场内廷议事并邀请需要的 Agent。
-2. 输入问题或上传附件；每轮回复按队列串行进行，后续消息不会并发开启第二场对话。
-3. 查看各 Agent 的意见、思考深度和研究结果。研究能力仅允许受控的资源/文档读取。
-4. 选择方案并审批，再确认是否创建任务。
-5. 新任务回到原有 EDICT 流程，从太子开始派发；议事本身可以结束、归档或删除。
-
-### 记录清理原则
+## End-to-end workflow
 
 ```text
-进行中：保留，允许暂停/恢复/结束
-已结束：显示删除入口，删除记录及其专属附件/临时运行数据
+Download a Release
+        ↓
+First launch in safe mode
+        ↓
+Settings: provider endpoint + API key + model
+        ↓
+Check model capabilities and bind agents
+        ↓
+Issue a decree
+        ↓
+Crown Prince triage → Secretariat plan → Chancellery review → State Affairs dispatch
+        ↓
+Six Ministries execute → Board tracking → Agent reports back
+        ↓
+Review results, retry/pause/cancel, or clean up finished history
 ```
 
-## 新电脑安装
+### Inner Court workflow
 
-从 Releases 下载：
+1. Open **Inner Court**, create the single available discussion, and invite the agents needed for the topic.
+2. Enter a question or attach files. Each turn is processed serially; a later message cannot open a second concurrent room.
+3. Review each agent's opinion, thinking depth, and research result. Research is limited to controlled resource and document reading.
+4. Select a proposal, approve it, and confirm whether it should become a task.
+5. The new task returns to the standard EDICT flow and starts with Crown Prince triage. The discussion itself can then be ended, archived, or deleted.
 
-- `Edict_InnerCourt-0.1.5-arm64-mac.zip`：Apple Silicon（M 系列）。
-- `Edict_InnerCourt-0.1.5-mac.zip`：Intel。
+### Record cleanup policy
 
-解压后打开 `Edict_InnerCourt.app`，进入设置：
+```text
+Active: keep the record; allow pause, resume, or end
+Finished: show a delete action and remove the record plus its dedicated attachments/runtime data
+```
 
-1. 填写供应商 Base URL。
-2. 填写 API Key；密钥只保存在本机安全存储，不会写进 GitHub 项目。
-3. 添加或发现模型，并为 Agent 选择模型。
-4. 检查运行时状态，再在需要时开启自动执行。
+## New computer setup
 
-当前 Release 未使用 Apple Developer 签名和公证。macOS 首次拦截时，Control-click 应用并选择“打开”；确认来源无误后再按系统提示允许运行。
+Download from [Releases](https://github.com/Logosss1/edict/releases/latest):
 
-## 本地开发与打包
+- `Edict_InnerCourt-0.1.5-arm64-mac.zip`: Apple Silicon Macs (M-series).
+- `Edict_InnerCourt-0.1.5-mac.zip`: Intel Macs.
 
-源码构建需要 Node/npm 和 Python。进入 `desktop` 目录后：
+Extract the ZIP, open `Edict_InnerCourt.app`, and go to **Settings**:
+
+1. Enter your provider Base URL.
+2. Enter your API key. It is stored in the local secure store and is not written into the GitHub project.
+3. Add or discover models, then choose a model for each agent.
+4. Check runtime readiness and enable automatic execution only when needed.
+
+The current Release is not signed or notarized with an Apple Developer certificate. If macOS blocks it on first launch, Control-click the app and choose **Open**, then follow the system prompt after verifying the Release source.
+
+## Local development and packaging
+
+Source builds require Node/npm and Python. From the `desktop` directory:
 
 ```bash
 npm ci
@@ -110,27 +112,26 @@ npm run build
 npm run dist:mac
 ```
 
-`npm run dist:mac` 会生成 arm64/x64 ZIP。便携运行时、缓存、应用输出、测试结果、机器运行数据和本地凭据均被 Git 忽略；发布时将 ZIP 作为 GitHub Release 资产上传，而不是提交到源码历史。
+`npm run dist:mac` creates arm64 and x64 ZIP packages. Portable runtimes, caches, application output, test results, machine runtime data, and local credentials are ignored by Git. Release ZIPs are uploaded as GitHub Release assets rather than committed to source history.
 
-## 项目结构
+## Project layout
 
 ```text
 Edict_InnerCourt/
-├── desktop/                  # Electron 主进程、设置页、运行时封装与打包脚本
-├── upstream/dashboard/       # EDICT 看板、任务 API、御书房与朝堂议事服务
-├── upstream/edict/frontend/  # 看板 React 前端
-├── upstream/agents/          # 三省六部 Agent 角色与规则
-├── upstream/docker/demo_data/ # 不含个人配置的演示数据
-└── README.md
+├── desktop/                    # Electron main process, Settings, runtime wrapper, and packaging
+├── upstream/dashboard/         # EDICT board, task API, Inner Court, and Court Discussion services
+├── upstream/edict/frontend/    # Board React frontend
+├── upstream/agents/            # Three Departments and Six Ministries agent roles and rules
+├── upstream/docker/demo_data/  # Demo data without personal configuration
+├── README.md                   # English default README
+└── README.zh-CN.md             # Chinese README
 ```
 
-## 安全边界
+## Security boundary
 
-- 不要把真实 `.env`、供应商配置、API Key、OpenClaw userData 或运行日志提交到仓库。
-- Release 只包含通用演示数据；每台新电脑都需要在设置页自行配置供应商。
-- 供应商 API Key 不出现在普通界面摘要、源码配置或 Git 历史中。
-- 未签名安装包只应从你确认过的 Release 来源下载。
+- Releases contain only generic demo data. Each new computer must configure its own provider in Settings.
+- Unsigned packages should be downloaded only from a Release source you have verified.
 
-## 许可证
+## License
 
-仓库中的上游代码和授权文件按其原有许可证使用；提交修改时请同时遵守上游项目的许可证和贡献规范。
+Upstream code and license files remain subject to their original licenses. Contributions must comply with the upstream project's license and contribution requirements.

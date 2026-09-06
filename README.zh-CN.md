@@ -230,10 +230,6 @@ Edict_InnerCourt 是 [EDICT](https://github.com/cft0808/edict) 的 macOS 桌面�
 
 进行中的任务、会话和议事受到保护。先完成、取消或结束记录，使其进入终态后，再使用带确认的删除入口。
 
-### 这台 Mac 上出现了以前的设置
-
-软件会在多次启动之间保留自己的本地数据。请进入设置页替换供应商或渠道配置，不要把 `userData`、运行日志或凭据文件复制进 Git 仓库或 Release 安装包。
-
 ### 可以在 Windows 或 Linux 上使用吗
 
 当前发布的桌面应用只支持 macOS，提供 arm64 和 x64 两种安装包。原始 EDICT 源码有其他部署路径，但本桌面项目目前不宣称提供 Windows/Linux 桌面安装包。

@@ -230,10 +230,6 @@ That is intentional. The desktop edition allows one unfinished Inner Court discu
 
 Active tasks, sessions, and discussions are protected. Finish, cancel, or otherwise move the record to a terminal state first; then use its confirmed delete action.
 
-### I see old settings on this Mac
-
-The app intentionally persists its own user data between launches. Use the Settings page to replace the provider or channel configuration. Do not copy `userData`, runtime logs, or credential files into the Git repository or into a Release ZIP.
-
 ### Can I use this package on Windows or Linux?
 
 The distributed application is currently macOS-only and provides arm64 and x64 macOS packages. The upstream EDICT source has separate deployment paths; this desktop packaging project does not claim cross-platform desktop installers yet.

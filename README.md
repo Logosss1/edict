@@ -287,7 +287,9 @@ Edict_InnerCourt/
 - Read [SECURITY.md](SECURITY.md) before reporting a vulnerability. Do not put API keys, provider credentials, OpenClaw user data, or private logs in a public issue.
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the runtime boundary or the Three Departments and Six Ministries workflow.
 - The project is distributed under the [MIT License](LICENSE). Upstream EDICT attribution and license information are preserved in [NOTICE.md](NOTICE.md) and `upstream/LICENSE`.
-- For ordinary bugs and feature requests, use [GitHub Issues](https://github.com/Logosss1/Edict_InnerCourt/issues) and include the app version, macOS version, architecture, reproduction steps, and redacted logs.
+- Share product ideas, workflow improvements, and general feedback in [GitHub Discussions](https://github.com/Logosss1/Edict_InnerCourt/discussions).
+- Report reproducible bugs through [GitHub Issues](https://github.com/Logosss1/Edict_InnerCourt/issues) and include the app version, macOS version, architecture, reproduction steps, and redacted logs.
+- Do not include API keys, provider credentials, OpenClaw user data, or private logs in public discussions or issues.
 - For the original orchestration design, see the [upstream EDICT project](https://github.com/cft0808/edict).
 
 ## Release policy

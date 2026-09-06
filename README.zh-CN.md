@@ -287,7 +287,9 @@ Edict_InnerCourt/
 - 报告漏洞前请先阅读 [SECURITY.md](SECURITY.md)，不要在公开 Issue 中放入 API Key、供应商凭据、OpenClaw 用户数据或未脱敏日志。
 - 修改运行时边界或三省六部流程前，请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 - 项目使用 [MIT License](LICENSE)。上游 EDICT 的归属和许可证信息保留在 [NOTICE.md](NOTICE.md) 与 `upstream/LICENSE`。
-- 普通 Bug 和功能建议请使用 [GitHub Issues](https://github.com/Logosss1/Edict_InnerCourt/issues)，并提供版本、macOS 版本、芯片架构、复现步骤和已脱敏日志。
+- 产品想法、工作流改进和一般使用反馈，请发布到 [GitHub Discussions](https://github.com/Logosss1/Edict_InnerCourt/discussions)。
+- 可复现的 Bug 请通过 [GitHub Issues](https://github.com/Logosss1/Edict_InnerCourt/issues) 报告，并提供软件版本、macOS 版本、芯片架构、复现步骤和已脱敏日志。
+- 不要在公开讨论或 Issue 中放入 API Key、供应商凭据、OpenClaw 用户数据或私人日志。
 - 关于三省六部原始编排设计，请参阅[上游 EDICT 项目](https://github.com/cft0808/edict)。
 
 ## Release 策略

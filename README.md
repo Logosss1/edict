@@ -1,6 +1,6 @@
 # Edict_InnerCourt
 
-English | [Chinese](README.zh-CN.md)
+English | [中文](README.zh-CN.md)
 
 <p align="center">
   <strong>A desktop distribution of EDICT's Three Departments and Six Ministries multi-agent workflow.</strong><br>

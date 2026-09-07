@@ -34,6 +34,20 @@ export const api = {
   morningConfig: () => fetchJ<SubConfig>(`${API_BASE}/api/morning-config`),
   agentsStatus: () => fetchJ<AgentsStatusData>(`${API_BASE}/api/agents-status`),
   readiness: () => fetchJ<ReadinessData>(`${API_BASE}/api/readiness`),
+  preflightRepair: (action: 'sync_runtime' = 'sync_runtime') =>
+    postJ<PreflightRepairResult>(`${API_BASE}/api/preflight/repair`, { action }),
+
+  // 桌面总控台与工作区执行检查
+  commandCenter: () => fetchJ<CommandCenterData>(`${API_BASE}/api/command-center`),
+  commandCenterMessage: (data: CommandCenterMessagePayload) =>
+    postJ<CommandCenterResult>(`${API_BASE}/api/command-center/message`, data),
+  commandCenterApprove: () => postJ<CommandCenterResult>(`${API_BASE}/api/command-center/approve`, {}),
+  taskWorkspace: (id: string) =>
+    fetchJ<TaskWorkspaceData>(`${API_BASE}/api/task-workspace/${encodeURIComponent(id)}`),
+  runTaskTest: (taskId: string, commandId?: string) =>
+    postJ<WorkspaceRunResult>(`${API_BASE}/api/task-workspace/test`, { taskId, commandId }),
+  cancelTaskTest: (runId: string) =>
+    postJ<ActionResult>(`${API_BASE}/api/task-workspace/test/cancel`, { runId }),
 
   // 任务实时动态
   taskActivity: (id: string) =>
@@ -54,8 +68,8 @@ export const api = {
     postJ<ActionResult & { model?: string; thinkingDefault?: string; thinking?: string; agentCount?: number }>(
       `${API_BASE}/api/set-model-profile`, { providerId, model: modelId, thinkingDefault }
     ),
-  setDispatchChannel: (channel: string) =>
-    postJ<ActionResult>(`${API_BASE}/api/set-dispatch-channel`, { channel }),
+  setDispatchChannel: (channel: string, enabled = Boolean(channel)) =>
+    postJ<ActionResult>(`${API_BASE}/api/set-dispatch-channel`, { channel, enabled }),
   agentWake: (agentId: string) =>
     postJ<ActionResult>(`${API_BASE}/api/agent-wake`, { agentId }),
   taskAction: (taskId: string, action: string, reason: string) =>
@@ -126,6 +140,8 @@ export interface ActionResult {
   ok: boolean;
   message?: string;
   error?: string;
+  state?: string;
+  task?: Task;
 }
 
 export interface FlowEntry {
@@ -133,6 +149,7 @@ export interface FlowEntry {
   from: string;
   to: string;
   remark: string;
+  kind?: 'workflow' | 'scheduler' | string;
 }
 
 export interface TodoItem {
@@ -157,6 +174,9 @@ export interface Task {
   block: string;
   ac: string;
   output: string;
+  targetDept?: string;
+  dispatchAssignmentRequired?: boolean;
+  dispatchAssignmentError?: string;
   heartbeat: Heartbeat;
   flow_log: FlowEntry[];
   todos: TodoItem[];
@@ -165,8 +185,18 @@ export interface Task {
   archivedAt?: string;
   updatedAt?: string;
   sourceMeta?: Record<string, unknown>;
+  projectPath?: string;
+  outputDir?: string;
+  workflowMode?: 'small' | 'standard' | 'complex' | string;
+  approvalMode?: 'ask' | 'auto' | 'full' | string;
+  targetAgent?: string;
+  plan?: CommandPlan;
+  smallResult?: string;
+  dispatchKind?: string;
+  dispatchMessage?: string;
   activity?: ActivityEntry[];
   _prev_state?: string;
+  _scheduler?: SchedulerInfo;
 }
 
 export interface SyncStatus {
@@ -204,6 +234,7 @@ export interface AgentConfig {
   agents: AgentInfo[];
   knownModels?: KnownModel[];
   dispatchChannel?: string;
+  dispatchChannelEnabled?: boolean;
 }
 
 export interface ChangeLogEntry {
@@ -274,15 +305,52 @@ export interface ReadinessCheck {
   label: string;
   ready: boolean;
   detail: string;
+  scope?: 'workspace' | 'dispatch' | 'runtime' | 'provider' | 'agent' | 'tools' | string;
+  blocking?: boolean;
+  severity?: 'ready' | 'blocker' | 'warning' | string;
+  action?: {
+    type: 'workspace-permission' | 'settings' | 'none' | string;
+    label: string;
+    target?: string;
+  };
+}
+
+export interface ReadinessRoute {
+  ready: boolean;
+  enabled: boolean;
+  mode: 'local' | 'external' | 'disabled' | string;
+  detail: string;
+}
+
+export interface ReadinessSummary {
+  total: number;
+  ready: number;
+  blockers: number;
+  warnings: number;
 }
 
 export interface ReadinessData {
   ok: boolean;
   ready: boolean;
   checks: ReadinessCheck[];
+  routes: {
+    board: ReadinessRoute;
+    yushufang: ReadinessRoute;
+    court: ReadinessRoute;
+    externalDispatch: ReadinessRoute;
+    [key: string]: ReadinessRoute;
+  };
+  summary: ReadinessSummary;
   next?: string;
   checkedAt?: string;
   error?: string;
+}
+
+export interface PreflightRepairResult {
+  ok: boolean;
+  message?: string;
+  error?: string;
+  readiness?: ReadinessData;
 }
 
 export interface MorningNewsItem {
@@ -328,6 +396,7 @@ export interface ActivityEntry {
   from?: string;
   to?: string;
   remark?: string;
+  scheduler?: boolean;
   tools?: { name: string; input_preview?: string }[];
   tool?: string;
   output?: string;
@@ -379,12 +448,21 @@ export interface SchedulerInfo {
   retryCount?: number;
   escalationLevel?: number;
   lastDispatchStatus?: string;
+  lastDispatchMode?: string;
+  lastDispatchAgent?: string;
+  lastDispatchTrigger?: string;
+  lastDispatchError?: string;
   stallThresholdSec?: number;
   enabled?: boolean;
   lastProgressAt?: string;
   lastDispatchAt?: string;
-  lastDispatchAgent?: string;
+  dispatchAttemptId?: string;
+  dispatchQueuedAt?: string;
+  dispatchStartedAt?: string;
+  lastEvent?: string;
+  lastEventAt?: string;
   autoRollback?: boolean;
+  stateTransitionObserved?: boolean;
 }
 
 export interface SchedulerStateData {
@@ -392,6 +470,13 @@ export interface SchedulerStateData {
   error?: string;
   scheduler?: SchedulerInfo;
   stalledSec?: number;
+  dispatchStatus?: string;
+  dispatchStatusLabel?: string;
+  dispatchStatusDetail?: string;
+  dispatchNextAction?: string;
+  dispatchMode?: string;
+  lastEvent?: string;
+  lastEventAt?: string;
 }
 
 export interface SkillContentResult {
@@ -418,6 +503,116 @@ export interface CreateTaskPayload {
   priority?: string;
   templateId?: string;
   params?: Record<string, string>;
+  workflowMode?: 'standard' | 'complex' | string;
+  permissionMode?: 'ask' | 'auto' | 'full' | string;
+  commandMessageId?: string;
+  plan?: CommandPlan;
+}
+
+export interface CommandPlan {
+  mode: 'chat' | 'small' | 'standard' | 'complex' | string;
+  modeLabel: string;
+  reason: string;
+  suggestedAgents: string[];
+  targetDept?: string;
+  nextStep: string;
+  requiresApproval?: boolean;
+  permissionScope?: string;
+}
+
+export interface CommandCenterMessage {
+  id: string;
+  role: 'emperor' | 'taizi' | string;
+  text: string;
+  at: string;
+  plan?: CommandPlan;
+  action?: string;
+  taskId?: string;
+  permissionMode?: string;
+  errorCode?: string;
+}
+
+export interface CommandCenterData {
+  ok: boolean;
+  version?: number;
+  messages: CommandCenterMessage[];
+  pendingPlan?: {
+    id: string;
+    text: string;
+    plan: CommandPlan;
+    permissionMode?: string;
+    createdAt?: string;
+  } | null;
+  updatedAt?: string;
+  error?: string;
+}
+
+export interface CommandCenterMessagePayload {
+  text: string;
+  mode?: 'chat' | 'small' | 'standard' | 'complex' | '';
+  permissionMode?: 'ask' | 'auto' | 'full';
+  approved?: boolean;
+}
+
+export interface CommandCenterResult extends CommandCenterData {
+  taskId?: string;
+  message?: string;
+  requiresApproval?: boolean;
+  plan?: CommandPlan;
+  commandMessageId?: string;
+}
+
+export interface WorkspaceArtifact {
+  path: string;
+  name: string;
+  size: number;
+  modifiedAt: number;
+}
+
+export interface WorkspaceGitSnapshot {
+  available: boolean;
+  branch: string;
+  changedFiles: string[];
+  summary: string;
+}
+
+export interface WorkspaceTestCommand {
+  id: string;
+  label: string;
+}
+
+export interface WorkspaceTestRun {
+  id: string;
+  taskId: string;
+  commandId: string;
+  label: string;
+  status: 'running' | 'passed' | 'failed' | 'timeout' | string;
+  startedAt?: number;
+  finishedAt?: number | null;
+  exitCode?: number | null;
+  output?: string;
+}
+
+export interface TaskWorkspaceData {
+  ok: boolean;
+  taskId: string;
+  projectPath: string;
+  outputDir: string;
+  task?: Pick<Task, 'id' | 'title' | 'state' | 'org' | 'now' | 'targetDept' | 'targetAgent' | 'block'>;
+  artifacts: WorkspaceArtifact[];
+  git: WorkspaceGitSnapshot;
+  testCommands: WorkspaceTestCommand[];
+  latestTest?: WorkspaceTestRun | null;
+  activity?: ActivityEntry[];
+  permission?: { mode: string; scope: string };
+  error?: string;
+}
+
+export interface WorkspaceRunResult {
+  ok: boolean;
+  runId?: string;
+  message?: string;
+  error?: string;
 }
 
 export interface RemoteSkillItem {

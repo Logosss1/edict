@@ -14,6 +14,24 @@
       <p id="message">正在准备本地运行环境和原始 EDICT 看板…</p>
       <div class="progress-track" aria-hidden="true"><span id="progress"></span></div>
       <div id="details" class="details" aria-live="polite"></div>
+      <section id="workspace-setup" class="workspace-setup" aria-labelledby="workspace-title" hidden>
+        <h2 id="workspace-title">选择工作区</h2>
+        <p id="workspace-help">工作区用于隔离任务、记录和 Agent 上下文。供应商、模型与派发渠道稍后在“设置”中配置。</p>
+        <div id="workspace-current" class="path-card" hidden></div>
+        <div class="setup-actions">
+          <button id="create-workspace" type="button">创建工作区文件夹</button>
+          <button id="select-workspace" class="secondary" type="button">选择已有文件夹</button>
+        </div>
+        <div id="project-setup" hidden>
+          <h2>选择项目目录</h2>
+          <p>任务产生的代码、文档和交付物将以此目录作为当前项目。可以直接使用工作区目录，也可以选择其他文件夹。</p>
+          <div class="setup-actions">
+            <button id="use-workspace-project" type="button">使用工作区目录</button>
+            <button id="select-project" class="secondary" type="button">选择项目文件夹</button>
+          </div>
+        </div>
+        <p id="workspace-error" class="setup-error" role="alert" hidden></p>
+      </section>
       <div class="actions">
         <button id="retry" type="button" hidden>重试启动</button>
         <button id="settings" class="secondary" type="button">打开设置</button>

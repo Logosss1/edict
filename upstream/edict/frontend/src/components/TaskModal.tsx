@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useStore, getPipeStatus, deptColor, stateLabel, STATE_LABEL } from '../store';
 import { api } from '../api';
+import { waitForTaskOperation } from '../async-actions';
 import { formatDashboardDateTime, formatDashboardTime } from '../time';
 import type {
   Task,
@@ -10,6 +11,7 @@ import type {
   TodoItem,
   PhaseDuration,
 } from '../api';
+import ConfirmDialog from './ConfirmDialog';
 
 const AGENT_LABELS: Record<string, string> = {
   main: '太子',
@@ -47,6 +49,14 @@ function fmtActivityTime(ts: number | string | undefined): string {
   return formatDashboardTime(ts, { showSeconds: true });
 }
 
+type ActionDialog = {
+  title: string;
+  message: string;
+  okLabel: string;
+  okClass?: string;
+  onOk: (reason: string) => void;
+};
+
 export default function TaskModal() {
   const modalTaskId = useStore((s) => s.modalTaskId);
   const setModalTaskId = useStore((s) => s.setModalTaskId);
@@ -56,6 +66,9 @@ export default function TaskModal() {
 
   const [activityData, setActivityData] = useState<TaskActivityData | null>(null);
   const [schedData, setSchedData] = useState<SchedulerStateData | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionLabel, setActionLabel] = useState('');
+  const [actionDialog, setActionDialog] = useState<ActionDialog | null>(null);
   const laTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -114,31 +127,51 @@ export default function TaskModal() {
   const stages = getPipeStatus(task);
   const activeStage = stages.find((s) => s.status === 'active');
   const hb = task.heartbeat || { status: 'unknown' as const, label: '⚪ 无数据' };
-  const flowLog = task.flow_log || [];
+  // Scheduler bookkeeping is not a real Sansheng-Liubu handoff. Keep it out
+  // of the workflow timeline so entries such as “太子调度 → 太子” cannot be
+  // mistaken for the task returning to Taizi.
+  const flowLog = (task.flow_log || []).filter((entry) => entry.kind !== 'scheduler' && entry.from !== '太子调度');
   const todos = task.todos || [];
   const todoDone = todos.filter((x) => x.status === 'completed').length;
   const todoTotal = todos.length;
   const canStop = !['Done', 'Blocked', 'Cancelled'].includes(task.state);
+  const canCancel = !['Done', 'Cancelled'].includes(task.state);
   const canResume = ['Blocked', 'Cancelled'].includes(task.state);
   const canDelete = ['Done', 'Cancelled'].includes(task.state);
 
   const doTaskAction = async (action: string, reason: string) => {
+    if (actionBusy) return;
+    setActionBusy(true);
+    setActionLabel(action === 'resume' ? '正在恢复，并等待调度器确认…' : action === 'stop' ? '正在叫停，并等待进程退出…' : '正在取消，并等待状态落盘…');
     try {
       const r = await api.taskAction(task.id, action, reason);
       if (r.ok) {
-        toast(r.message || '操作成功', 'ok');
-        loadAll();
-        close();
+        const waited = await waitForTaskOperation(task.id, action as 'stop' | 'cancel' | 'resume', r.state);
+        await loadAll();
+        if (waited.status === 'confirmed') {
+          toast(r.message || '操作已确认', 'ok');
+          close();
+        } else if (waited.status === 'failed') {
+          toast(waited.detail || '调度器未能完成操作', 'err');
+          await fetchSched();
+        } else {
+          toast('操作已提交，后台仍在处理；当前窗口会继续保留。');
+          await fetchSched();
+        }
       } else {
         toast(r.error || '操作失败', 'err');
       }
     } catch {
       toast('服务器连接失败', 'err');
+    } finally {
+      setActionLabel('');
+      setActionBusy(false);
     }
   };
 
-  const handleDelete = async () => {
-    if (!canDelete || !confirm(`确认永久删除任务 ${task.id}？\n\n${task.title || '(无标题)'}\n\n任务记录会从所有任务页面移除，且无法恢复。`)) return;
+  const deleteTask = async () => {
+    setActionBusy(true);
+    setActionLabel('正在删除记录…');
     try {
       const r = await api.deleteTask(task.id);
       if (r.ok) {
@@ -150,15 +183,29 @@ export default function TaskModal() {
       }
     } catch {
       toast('服务器连接失败', 'err');
+    } finally {
+      setActionLabel('');
+      setActionBusy(false);
     }
   };
 
-  const doReview = async (action: string) => {
-    const labels: Record<string, string> = { approve: '准奏', reject: '封驳' };
-    const comment = prompt(`${labels[action]} ${task.id}\n\n请输入批注（可留空）：`);
-    if (comment === null) return;
+  const handleDelete = () => {
+    if (actionBusy || !canDelete) return;
+    setActionDialog({
+      title: '永久删除任务记录',
+      message: '确认删除 ' + task.id + '？' + (task.title ? '\n\n' + task.title : '') + '\n\n任务记录会从所有任务页面移除，且无法恢复。',
+      okLabel: '永久删除',
+      okClass: 'btn-cancel',
+      onOk: () => { setActionDialog(null); void deleteTask(); },
+    });
+  };
+
+  const submitReview = async (action: string, comment: string) => {
+    setActionBusy(true);
+    setActionLabel(action === 'approve' ? '正在提交准奏…' : '正在提交封驳…');
     try {
-      const r = await api.reviewAction(task.id, action, comment || '');
+      const labels: Record<string, string> = { approve: '准奏', reject: '封驳' };
+      const r = await api.reviewAction(task.id, action, comment);
       if (r.ok) {
         toast(`✅ ${task.id} 已${labels[action]}`, 'ok');
         loadAll();
@@ -168,15 +215,29 @@ export default function TaskModal() {
       }
     } catch {
       toast('服务器连接失败', 'err');
+    } finally {
+      setActionLabel('');
+      setActionBusy(false);
     }
   };
 
-  const doAdvance = async () => {
-    const next = NEXT_LABELS[task.state] || '下一步';
-    const comment = prompt(`⏩ 手动推进 ${task.id}\n当前: ${task.state} → 下一步: ${next}\n\n请输入说明（可留空）：`);
-    if (comment === null) return;
+  const doReview = (action: string) => {
+    if (actionBusy) return;
+    const labels: Record<string, string> = { approve: '准奏', reject: '封驳' };
+    setActionDialog({
+      title: labels[action] + ' ' + task.id,
+      message: '请确认审议决定；批注可留空，提交后会立即刷新任务状态。',
+      okLabel: '确认' + labels[action],
+      okClass: action === 'approve' ? 'btn-resume' : 'btn-cancel',
+      onOk: (comment) => { setActionDialog(null); void submitReview(action, comment); },
+    });
+  };
+
+  const submitAdvance = async (comment: string) => {
+    setActionBusy(true);
+    setActionLabel('正在推进，并等待下一阶段派发…');
     try {
-      const r = await api.advanceState(task.id, comment || '');
+      const r = await api.advanceState(task.id, comment);
       if (r.ok) {
         toast(`⏩ ${r.message}`, 'ok');
         loadAll();
@@ -186,11 +247,58 @@ export default function TaskModal() {
       }
     } catch {
       toast('服务器连接失败', 'err');
+    } finally {
+      setActionLabel('');
+      setActionBusy(false);
+    }
+  };
+
+  const doAdvance = () => {
+    if (actionBusy) return;
+    const next = NEXT_LABELS[task.state] || '下一步';
+    setActionDialog({
+      title: '手动推进 ' + task.id,
+      message: '当前阶段：' + task.state + '\n下一阶段：' + next + '\n\n说明可留空；推进后会按原流程派发下一阶段。',
+      okLabel: '确认推进',
+      okClass: 'btn-resume',
+      onOk: (comment) => { setActionDialog(null); void submitAdvance(comment); },
+    });
+  };
+
+  const submitSchedAction = async (action: string, reason: string) => {
+    const labels: Record<string, string> = { retry: '重试', escalate: '升级', rollback: '回滚' };
+    const handlers: Record<string, (id: string, r: string) => Promise<{ ok: boolean; message?: string; error?: string }>> = {
+      retry: api.schedulerRetry,
+      escalate: api.schedulerEscalate,
+      rollback: api.schedulerRollback,
+    };
+    setActionBusy(true);
+    setActionLabel(`正在${labels[action]}，等待调度器确认…`);
+    try {
+      const r = await handlers[action](task.id, reason);
+      if (!r.ok) {
+        toast(r.error || (labels[action] + '失败'), 'err');
+        return;
+      }
+      const waited = await waitForTaskOperation(task.id, 'dispatch');
+      await fetchSched();
+      await loadAll();
+      if (waited.status === 'confirmed') toast(r.message || '操作成功', 'ok');
+      else if (waited.status === 'failed') toast(waited.detail || (labels[action] + '失败'), 'err');
+      else toast(`${labels[action]}已提交，后台仍在处理。`);
+    } catch {
+      toast('服务器连接失败', 'err');
+    } finally {
+      setActionLabel('');
+      setActionBusy(false);
     }
   };
 
   const doSchedAction = async (action: string) => {
+    if (actionBusy) return;
     if (action === 'scan') {
+      setActionBusy(true);
+      setActionLabel('正在扫描停滞任务…');
       try {
         const r = await api.schedulerScan(180);
         if (r.ok) toast(`🔍 扫描完成：${r.count || 0} 个动作`, 'ok');
@@ -198,49 +306,57 @@ export default function TaskModal() {
         fetchSched();
       } catch {
         toast('服务器连接失败', 'err');
+      } finally {
+        setActionLabel('');
+        setActionBusy(false);
       }
       return;
     }
     const labels: Record<string, string> = { retry: '重试', escalate: '升级', rollback: '回滚' };
-    const reason = prompt(`请输入${labels[action]}原因（可留空）：`);
-    if (reason === null) return;
-    const handlers: Record<string, (id: string, r: string) => Promise<{ ok: boolean; message?: string; error?: string }>> = {
-      retry: api.schedulerRetry,
-      escalate: api.schedulerEscalate,
-      rollback: api.schedulerRollback,
-    };
-    try {
-      const r = await handlers[action](task.id, reason);
-      if (r.ok) toast(r.message || '操作成功', 'ok');
-      else toast(r.error || '操作失败', 'err');
-      fetchSched();
-      loadAll();
-    } catch {
-      toast('服务器连接失败', 'err');
-    }
+    setActionDialog({
+      title: '太子调度 · ' + labels[action],
+      message: '将对 ' + task.id + ' 执行“' + labels[action] + '”。原因可留空，提交后会刷新调度状态。',
+      okLabel: '确认' + labels[action],
+      okClass: action === 'rollback' ? 'btn-cancel' : 'btn-resume',
+      onOk: (reason) => { setActionDialog(null); void submitSchedAction(action, reason); },
+    });
   };
 
   const handleStop = () => {
-    const reason = prompt('请输入叫停原因（可留空）：');
-    if (reason === null) return;
-    doTaskAction('stop', reason);
+    if (actionBusy) return;
+    setActionDialog({
+      title: '叫停任务',
+      message: '确认叫停 ' + task.id + '？\n\n当前执行会被停止，任务保留为阻塞状态，之后可以恢复。',
+      okLabel: '确认叫停',
+      okClass: 'btn-stop',
+      onOk: (reason) => { setActionDialog(null); void doTaskAction('stop', reason); },
+    });
   };
 
   const handleCancel = () => {
-    if (!confirm(`确定要取消 ${task.id} 吗？`)) return;
-    const reason = prompt('请输入取消原因（可留空）：');
-    if (reason === null) return;
-    doTaskAction('cancel', reason);
+    if (actionBusy) return;
+    setActionDialog({
+      title: '取消任务',
+      message: '确认取消 ' + task.id + '？\n\n任务会停止并标记为已取消，之后仍可选择恢复。',
+      okLabel: '确认取消',
+      okClass: 'btn-cancel',
+      onOk: (reason) => { setActionDialog(null); void doTaskAction('cancel', reason); },
+    });
   };
 
   // Scheduler state
   const sched = schedData?.scheduler;
   const stalledSec = schedData?.stalledSec || 0;
+  const taskOpen = !['Done', 'Cancelled'].includes(task.state);
+  const canRetryDispatch = taskOpen && task.state !== 'Blocked';
+  const dispatchError = sched?.lastDispatchError || (task.state === 'Blocked' && task.block && task.block !== '无' && task.block !== '-' ? task.block : '');
+  const dispatchStatus = schedData?.dispatchStatusLabel || (dispatchError ? '派发失败' : sched?.lastDispatchStatus === 'success' ? '已派发' : sched?.lastDispatchStatus === 'idle' ? '未开始派发' : sched?.lastDispatchStatus || '未派发');
+  const dispatchStatusDetail = schedData?.dispatchStatusDetail || dispatchError || sched?.lastEvent || '';
 
   return (
     <div className="modal-bg open" onClick={close}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <button className="modal-close" onClick={close}>✕</button>
+      <div className="modal" onClick={(e) => e.stopPropagation()} aria-busy={actionBusy}>
+        <button className="modal-close" onClick={close} disabled={actionBusy}>✕</button>
         <div className="modal-body">
           <div className="modal-id">{task.id}</div>
           <div className="modal-title">{task.title || '(无标题)'}</div>
@@ -277,43 +393,53 @@ export default function TaskModal() {
           </div>
 
           {/* Action Buttons */}
-          <div className="task-actions">
+          <div className="task-actions" aria-label="任务操作">
+            {actionBusy && <span className="async-action-status" role="status" aria-live="polite">⟳ {actionLabel || '正在执行操作…'}</span>}
             {canStop && (
               <>
-                <button className="btn-action btn-stop" onClick={handleStop}>⏸ 叫停任务</button>
-                <button className="btn-action btn-cancel" onClick={handleCancel}>🚫 取消任务</button>
+                <button className="btn-action btn-stop" onClick={handleStop} disabled={actionBusy}>⏸ 叫停任务</button>
+                <button className="btn-action btn-cancel" onClick={handleCancel} disabled={actionBusy}>🚫 取消任务</button>
               </>
             )}
+            {!canStop && canCancel && (
+              <button className="btn-action btn-cancel" onClick={handleCancel} disabled={actionBusy}>🚫 取消任务</button>
+            )}
             {canResume && (
-              <button className="btn-action btn-resume" onClick={() => doTaskAction('resume', '恢复执行')}>▶️ 恢复执行</button>
+              <button className="btn-action btn-resume" onClick={() => void doTaskAction('resume', '恢复执行')} disabled={actionBusy}>▶️ 恢复执行</button>
             )}
             {['Review', 'Menxia'].includes(task.state) && (
               <>
-                <button className="btn-action" style={{ background: '#2ecc8a22', color: '#2ecc8a', border: '1px solid #2ecc8a44' }} onClick={() => doReview('approve')}>✅ 准奏</button>
-                <button className="btn-action" style={{ background: '#ff527022', color: '#ff5270', border: '1px solid #ff527044' }} onClick={() => doReview('reject')}>🚫 封驳</button>
+                <button className="btn-action" style={{ background: '#2ecc8a22', color: '#2ecc8a', border: '1px solid #2ecc8a44' }} onClick={() => void doReview('approve')} disabled={actionBusy}>✅ 准奏</button>
+                <button className="btn-action" style={{ background: '#ff527022', color: '#ff5270', border: '1px solid #ff527044' }} onClick={() => void doReview('reject')} disabled={actionBusy}>🚫 封驳</button>
               </>
             )}
             {['Pending', 'Taizi', 'Zhongshu', 'Menxia', 'Assigned', 'Doing', 'Review', 'Next'].includes(task.state) && (
-              <button className="btn-action" style={{ background: '#7c5cfc18', color: '#7c5cfc', border: '1px solid #7c5cfc44' }} onClick={doAdvance}>⏩ 推进到下一步</button>
+              <button className="btn-action" style={{ background: '#7c5cfc18', color: '#7c5cfc', border: '1px solid #7c5cfc44' }} onClick={() => void doAdvance()} disabled={actionBusy}>⏩ 推进到下一步</button>
             )}
             {canDelete && (
-              <button className="btn-action btn-cancel" onClick={handleDelete}>🗑 删除记录</button>
+              <button className="btn-action btn-cancel" onClick={handleDelete} disabled={actionBusy}>🗑 删除记录</button>
             )}
           </div>
+
+          {dispatchError && <div className="task-dispatch-error" role="alert">
+            <strong>派发未完成</strong>
+            <span>{dispatchError}</span>
+            {canResume && <button type="button" className="mini-act danger" onClick={() => void doTaskAction('resume', '恢复并重试派发')} disabled={actionBusy}>恢复并重试</button>}
+          </div>}
 
           {/* Scheduler Section */}
           <div className="sched-section">
             <div className="sched-head">
               <span className="sched-title">🧭 太子调度</span>
               <span className="sched-status">
-                {sched ? `${sched.enabled === false ? '已禁用' : '运行中'} · 阈值 ${sched.stallThresholdSec || 180}s` : '加载中...'}
+                {sched ? `${sched.enabled === false ? '已禁用' : '运行中'} · ${dispatchStatus} · 阈值 ${sched.stallThresholdSec || 180}s` : '加载中...'}
               </span>
             </div>
             <div className="sched-grid">
               <div className="sched-kpi"><div className="k">停滞时长</div><div className="v">{fmtStalled(stalledSec)}</div></div>
               <div className="sched-kpi"><div className="k">重试次数</div><div className="v">{sched?.retryCount || 0}</div></div>
               <div className="sched-kpi"><div className="k">升级级别</div><div className="v">{!sched?.escalationLevel ? '无' : sched.escalationLevel === 1 ? '门下省' : '尚书省'}</div></div>
-              <div className="sched-kpi"><div className="k">派发状态</div><div className="v">{sched?.lastDispatchStatus || 'idle'}</div></div>
+              <div className="sched-kpi"><div className="k">派发状态</div><div className={`v ${dispatchError ? 'error' : ''}`}>{dispatchStatus}</div></div>
             </div>
             {sched && (
               <div className="sched-line">
@@ -321,13 +447,15 @@ export default function TaskModal() {
                 {sched.lastDispatchAt && <span>最近派发 {formatDashboardDateTime(sched.lastDispatchAt)}</span>}
                 <span>自动回滚 {sched.autoRollback === false ? '关闭' : '开启'}</span>
                 {sched.lastDispatchAgent && <span>目标 {sched.lastDispatchAgent}</span>}
+                {sched.lastDispatchMode && <span>方式 {sched.lastDispatchMode === 'local' ? '本地' : sched.lastDispatchMode === 'gateway' ? 'Gateway' : sched.lastDispatchMode}</span>}
               </div>
             )}
+            {dispatchStatusDetail && <div className="sched-dispatch-detail">{dispatchStatusDetail}</div>}
             <div className="sched-actions">
-              <button className="sched-btn" onClick={() => doSchedAction('retry')}>🔁 重试派发</button>
-              <button className="sched-btn warn" onClick={() => doSchedAction('escalate')}>📣 升级协调</button>
-              <button className="sched-btn danger" onClick={() => doSchedAction('rollback')}>↩️ 回滚稳定点</button>
-              <button className="sched-btn" onClick={() => doSchedAction('scan')}>🔍 立即扫描</button>
+              {canRetryDispatch && <button className="sched-btn" onClick={() => void doSchedAction('retry')} disabled={actionBusy}>🔁 重试派发</button>}
+              {taskOpen && <button className="sched-btn warn" onClick={() => void doSchedAction('escalate')} disabled={actionBusy}>📣 升级协调</button>}
+              {taskOpen && <button className="sched-btn danger" onClick={() => void doSchedAction('rollback')} disabled={actionBusy}>↩️ 回滚稳定点</button>}
+              {taskOpen && <button className="sched-btn" onClick={() => void doSchedAction('scan')} disabled={actionBusy}>🔍 立即扫描</button>}
             </div>
           </div>
 
@@ -350,6 +478,12 @@ export default function TaskModal() {
                 <div className="mr-label">执行部门</div>
                 <div className="mr-val"><span className={`tag dt-${(task.org || '').replace(/\s/g, '')}`}>{task.org || '—'}</span></div>
               </div>
+              {task.targetDept && (
+                <div className="m-row">
+                  <div className="mr-label">六部目标</div>
+                  <div className="mr-val"><span className="tag dt-六部">{task.targetDept}</span></div>
+                </div>
+              )}
               {task.eta && task.eta !== '-' && (
                 <div className="m-row"><div className="mr-label">预计完成</div><div className="mr-val">{task.eta}</div></div>
               )}
@@ -409,6 +543,7 @@ export default function TaskModal() {
           <LiveActivitySection data={activityData} isDone={['Done', 'Cancelled'].includes(task.state)} logRef={logRef} />
         </div>
       </div>
+      {actionDialog && <ConfirmDialog {...actionDialog} onCancel={() => setActionDialog(null)} />}
     </div>
   );
 }
@@ -491,8 +626,8 @@ function LiveActivitySection({
   const rs = data.resourceSummary;
 
   // Group non-flow activity by agent
-  const flowItems = activity.filter((a) => a.kind === 'flow');
-  const nonFlow = activity.filter((a) => a.kind !== 'flow');
+  const flowItems = activity.filter((a) => a.kind === 'flow' && !a.scheduler);
+  const nonFlow = activity.filter((a) => a.kind !== 'flow' && !a.scheduler);
   const grouped = new Map<string, ActivityEntry[]>();
   nonFlow.forEach((a) => {
     const key = a.agent || 'unknown';
@@ -545,8 +680,8 @@ function LiveActivitySection({
             <span style={{ fontSize: 10, color: 'var(--muted)' }}>✅{ts.completed} 🔄{ts.inProgress} ⬜{ts.notStarted} / 共{ts.total}项</span>
           </div>
           <div style={{ height: 8, background: 'var(--panel)', borderRadius: 4, overflow: 'hidden', display: 'flex' }}>
-            <div style={{ width: `${ts.total ? (ts.completed / ts.total) * 100 : 0}%`, background: '#22c55e', transition: 'width .3s' }} />
-            <div style={{ width: `${ts.total ? (ts.inProgress / ts.total) * 100 : 0}%`, background: '#3b82f6', transition: 'width .3s' }} />
+            <div style={{ width: `${ts.total ? (ts.completed / ts.total) * 100 : 0}%`, background: '#22c55e' }} />
+            <div style={{ width: `${ts.total ? (ts.inProgress / ts.total) * 100 : 0}%`, background: '#3b82f6' }} />
           </div>
         </div>
       )}

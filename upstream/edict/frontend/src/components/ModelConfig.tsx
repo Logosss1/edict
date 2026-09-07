@@ -286,7 +286,12 @@ export default function ModelConfig() {
         </div>
       </details>
 
-      <ChannelConfig initialChannel={agentConfig.dispatchChannel} onDispatchSaved={() => void loadAgentConfig()} toast={toast} />
+      <ChannelConfig
+        initialChannel={agentConfig.dispatchChannel}
+        dispatchEnabled={agentConfig.dispatchChannelEnabled}
+        onDispatchSaved={() => void loadAgentConfig()}
+        toast={toast}
+      />
 
       {/* Change Log */}
       <div style={{ marginTop: 24 }}>

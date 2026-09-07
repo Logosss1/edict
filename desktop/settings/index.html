@@ -16,22 +16,53 @@
         <div class="header-actions"><button id="open-monitor" class="button ghost" type="button">执行监控</button><button id="open-dashboard" class="button ghost" type="button">返回总控台</button></div>
       </header>
 
-      <nav class="tabs" aria-label="设置分类">
-        <button class="tab active" data-tab="providers" type="button">供应商</button>
-        <button class="tab" data-tab="agents" type="button">Agent 与模型</button>
-        <button class="tab" data-tab="runtime" type="button">运行策略</button>
-        <button class="tab" data-tab="dependencies" type="button">运行依赖</button>
-        <button class="tab" data-tab="mcp" type="button">Skills / MCP</button>
-        <button class="tab" data-tab="ops" type="button">执行诊断</button>
-      </nav>
+      <div class="settings-shell">
+        <aside class="settings-sidebar" aria-label="设置导航">
+          <div class="settings-sidebar-heading">
+            <span class="eyebrow">应用配置</span>
+            <strong>设置</strong>
+          </div>
+          <label class="settings-search">
+            <span class="sr-only">搜索设置</span>
+            <input id="settings-search" type="search" placeholder="搜索设置" autocomplete="off" />
+          </label>
+          <nav class="tabs" aria-label="设置分类">
+            <button class="tab" data-tab="general" data-search="常规 外观 工作区 主题" type="button">常规与外观</button>
+            <button class="tab active" data-tab="providers" data-search="供应商 渠道 密钥 模型" type="button">供应商与渠道</button>
+            <button class="tab" data-tab="agents" data-search="Agent 模型 六部 思考 工具 沙箱" type="button">Agent 与模型</button>
+            <button class="tab" data-tab="runtime" data-search="运行策略 自动派发 搜索 网页" type="button">运行策略</button>
+            <button class="tab" data-tab="dependencies" data-search="运行依赖 OpenClaw Node 权限" type="button">运行依赖</button>
+            <button class="tab" data-tab="skills" data-search="Skills 技能 工作区" type="button">Skills</button>
+            <button class="tab" data-tab="mcp" data-search="MCP 工具服务器" type="button">MCP</button>
+            <button class="tab" data-tab="ops" data-search="执行诊断 任务 监控 错误" type="button">执行诊断</button>
+            <button class="tab" data-tab="about" data-search="关于 版本 EDICT Edict InnerCourt" type="button">关于</button>
+          </nav>
+          <p id="settings-search-empty" class="settings-search-empty" hidden>没有匹配的设置</p>
+          <p class="settings-sidebar-note">配置按当前桌面用户保存。密钥由系统安全存储保护，不写入普通配置文件。</p>
+        </aside>
 
-      <section class="notice">
-        <strong>安全模式</strong>
-        <span>默认不自动唤醒 Agent；API Key 不进入普通配置、活动日志或 Git，只在桌面主进程内处理。</span>
-        <button id="reload-dashboard" class="button secondary notice-action" type="button" hidden>重载看板</button>
+        <div class="settings-content">
+          <section class="notice">
+            <strong>桌面执行模式</strong>
+            <span>供应商、模型、渠道和运行策略在这里配置；保存后会标明是否需要重载看板，当前任务不会被设置保存强行中断。</span>
+            <button id="reload-dashboard" class="button secondary notice-action" type="button" hidden>重载看板</button>
+          </section>
+
+      <section id="tab-general" class="tab-panel" hidden>
+        <section class="panel settings-panel">
+          <div class="panel-heading"><div><h2>常规与外观</h2><p>查看当前桌面运行边界和界面状态。</p></div><span id="general-status" class="status-dot neutral" role="status">读取中…</span></div>
+          <div class="info-grid">
+            <div class="info-item"><span>当前工作区</span><strong id="general-workspace">读取中…</strong><small>任务、Agent 临时运行目录和项目文件都以此为边界。</small></div>
+            <div class="info-item"><span>当前项目</span><strong id="general-project">读取中…</strong><small>创建任务前必须选择项目；不同工作区默认互不共享记忆。</small></div>
+            <div class="info-item"><span>界面语言</span><strong>简体中文</strong><small>当前桌面版本的界面语言。</small></div>
+            <div class="info-item"><span>外观</span><strong>深色工作台</strong><small>与运行看板保持一致；主题切换将在支持后开放。</small></div>
+          </div>
+          <div class="scope-note"><strong>配置边界</strong><span>工作区选择在启动与项目入口完成；供应商、Agent、模型、Skills、MCP 和派发渠道不随工作区创建重复配置。</span></div>
+        </section>
       </section>
 
       <section id="tab-providers" class="tab-panel">
+        <p class="scope-note"><strong>来源与生效范围</strong><span>供应商元数据保存在当前用户配置；API Key 只进入系统安全存储。模型目录同步到桌面实例的 OpenClaw 配置，保存后通常需要重载看板才会被运行进程读取。</span></p>
         <div class="layout">
           <aside class="panel provider-list-panel">
             <div class="panel-heading">
@@ -70,6 +101,7 @@
       </section>
 
       <section id="tab-agents" class="tab-panel" hidden>
+        <p class="scope-note"><strong>来源与生效范围</strong><span>Agent 注册来自项目内的 agents.json，模型和策略写入当前桌面实例的 OpenClaw 配置；已运行的任务不会被后台静默重启。</span></p>
         <div class="layout agent-layout">
           <aside class="panel provider-list-panel"><div class="panel-heading"><div><h2>已注册 Agent</h2><p id="agent-count">读取 agents.json</p></div><button id="refresh-agents" class="icon-button" title="刷新 Agent" type="button">↻</button></div><div id="agent-list" class="provider-list"></div></aside>
           <section class="panel editor-panel">
@@ -87,10 +119,10 @@
             </form>
           </section>
         </div>
-        <section class="panel skill-add-panel"><div class="panel-heading"><div><h2>新增 Skill 到工作区</h2><p>调用原始 EDICT /api/add-skill，写入所选 Agent 的 skills 目录。</p></div></div><div class="form-grid skill-grid"><label><span>Skill 名称</span><input id="skill-name" placeholder="例如：weekly-report" /></label><label><span>触发条件（可选）</span><input id="skill-trigger" placeholder="例如：需要周报时" /></label></div><label><span>描述</span><input id="skill-description" placeholder="技能用途" /></label></section>
       </section>
 
       <section id="tab-runtime" class="tab-panel" hidden>
+        <p class="scope-note"><strong>来源与生效范围</strong><span>联网权限和默认模型写入 OpenClaw；自动派发与 Gateway 重启是桌面运行选项。保存后不会中断当前任务，必要时会在顶部出现“重载看板”。</span></p>
         <section class="panel settings-panel"><div class="panel-heading"><div><h2>全局运行策略</h2><p>这些选项通过 OpenClaw 配置或桌面进程重启后生效。</p></div><span id="runtime-status" class="status-dot neutral">未读取</span></div>
           <form id="runtime-form">
             <div class="form-grid"><label><span>全局供应商</span><select id="global-provider"></select></label><label><span>全局默认模型</span><select id="global-model"></select></label></div>
@@ -104,6 +136,7 @@
       </section>
 
       <section id="tab-dependencies" class="tab-panel" hidden>
+        <p class="scope-note"><strong>来源与生效范围</strong><span>路径只保存在当前桌面用户的数据目录；检测会验证可执行文件、版本和工作区读写权限，不会替你修改 macOS 系统权限。</span></p>
         <section class="panel settings-panel" aria-labelledby="dependencies-heading">
           <div class="panel-heading"><h2 id="dependencies-heading">运行依赖</h2><span id="dependencies-status" class="status-dot neutral" role="status">未检测</span></div>
           <form id="dependencies-form">
@@ -118,15 +151,52 @@
         </section>
       </section>
 
+      <section id="tab-skills" class="tab-panel" hidden>
+        <section class="panel settings-panel">
+          <div class="panel-heading"><div><h2>Skills</h2><p>查看各 Agent 的技能白名单，并把技能添加到指定 Agent 的工作区。</p></div><span id="skills-status" class="status-dot neutral" role="status">未读取</span></div>
+          <p class="scope-note"><strong>来源与生效范围</strong><span>技能文件写入对应 Agent 的工作区；技能白名单由 Agent 策略控制。内置技能首次准备工作区时安装，不覆盖已有用户文件。</span></p>
+          <div class="form-grid">
+            <label><span>查看 Agent</span><select id="skill-agent"></select></label>
+            <div class="info-item compact-info"><span>当前技能</span><strong id="skill-count">0 个</strong><small id="skill-summary">选择 Agent 后查看。</small></div>
+          </div>
+          <div id="skill-list" class="skill-list" aria-live="polite"></div>
+          <div class="section-rule"></div>
+          <div class="panel-heading sub-heading"><div><h2>新增 Skill 到工作区</h2><p>调用原始 EDICT /api/add-skill，写入所选 Agent 的 skills 目录。</p></div></div>
+          <form id="skill-form" novalidate>
+            <div class="form-grid"><label><span>目标 Agent</span><select id="skill-target-agent"></select></label><label><span>Skill 名称</span><input id="skill-name" placeholder="例如：weekly-report" /></label></div>
+            <div class="form-grid"><label><span>触发条件（可选）</span><input id="skill-trigger" placeholder="例如：需要周报时" /></label><label><span>描述</span><input id="skill-description" placeholder="技能用途" /></label></div>
+            <div id="skill-error" class="form-error" role="alert"></div><div id="skill-success" class="form-success" role="status"></div>
+            <div class="actions"><button id="add-skill" class="button primary" type="submit">添加 Skill</button></div>
+          </form>
+        </section>
+      </section>
+
       <section id="tab-mcp" class="tab-panel" hidden>
+        <p class="scope-note"><strong>来源与生效范围</strong><span>MCP 使用 OpenClaw 原生 registry，配置保存在当前桌面实例；保存或删除后会请求重新加载，正在执行的 Agent 不会被强制打断。</span></p>
         <div class="layout"><aside class="panel provider-list-panel"><div class="panel-heading"><div><h2>MCP 服务器</h2><p id="mcp-count">读取 mcp.servers</p></div><button id="new-mcp" class="icon-button" title="新增 MCP" type="button">＋</button></div><div id="mcp-list" class="provider-list"></div><div id="empty-mcp" class="empty-state">还没有 MCP 配置</div></aside><section class="panel editor-panel"><div class="panel-heading editor-heading"><div><h2 id="mcp-title">新增 MCP 服务器</h2><p>保存后使用 OpenClaw 原生 MCP registry；密钥字段只显示名称。</p></div><span id="mcp-status" class="status-dot neutral">未保存</span></div><form id="mcp-form"><div class="form-grid"><label><span>名称</span><input id="mcp-name" placeholder="例如：local-tools" /></label><label><span>传输方式</span><select id="mcp-transport"><option value="stdio">stdio</option><option value="sse">sse</option><option value="streamable-http">streamable-http</option></select></label></div><label><span>配置 JSON</span><textarea id="mcp-json" rows="15" spellcheck="false" placeholder='{"command":"npx","args":["-y","your-mcp"]}'></textarea><small>stdio 需要 command；sse/streamable-http 需要 url。保存后可点击重新加载。</small></label><div id="mcp-error" class="form-error"></div><div id="mcp-success" class="form-success"></div><div class="actions"><button id="reload-mcp" class="button secondary" type="button">重新加载 MCP</button><span class="spacer"></span><button id="remove-mcp" class="button danger" type="button" hidden>删除</button><button id="save-mcp" class="button primary" type="submit">保存 MCP</button></div></form></section></div>
       </section>
 
       <section id="tab-ops" class="tab-panel" hidden>
-        <section class="panel ops-panel"><div class="panel-heading"><div><h2>执行诊断</h2><p>复用原始看板的任务、活动、调度器和 Agent 心跳接口。</p></div><button id="refresh-ops" class="button secondary" type="button">刷新</button></div><div id="ops-summary" class="ops-summary"></div><div id="ops-errors" class="form-error"></div><div id="ops-tasks" class="ops-tasks"></div><pre id="ops-json" class="diagnostic-json"></pre></section>
+        <p class="scope-note"><strong>来源与生效范围</strong><span>诊断汇总当前看板、Python 运行进程、任务调度器和 Agent 心跳；这里的暂停与取消仍走原任务接口并真实写回状态。</span></p>
+        <section class="panel ops-panel"><div class="panel-heading"><div><h2>执行诊断</h2><p>复用原始看板的任务、活动、调度器和 Agent 心跳接口。</p></div><div class="actions"><button id="copy-ops-json" class="button secondary" type="button">复制诊断 JSON</button><button id="refresh-ops" class="button secondary" type="button">刷新</button></div></div><div id="ops-summary" class="ops-summary"></div><div id="ops-errors" class="form-error"></div><div id="ops-copy-status" class="form-success" role="status"></div><div id="ops-tasks" class="ops-tasks"></div><pre id="ops-json" class="diagnostic-json"></pre></section>
+      </section>
+
+      <section id="tab-about" class="tab-panel" hidden>
+        <section class="panel settings-panel">
+          <div class="panel-heading"><div><h2>关于 Edict_InnerCourt</h2><p>桌面化的 EDICT 三省六部多 Agent 工作站。</p></div><span id="about-status" class="status-dot neutral" role="status">读取中…</span></div>
+          <div class="info-grid about-grid">
+            <div class="info-item"><span>应用版本</span><strong id="about-version">读取中…</strong><small>以当前桌面包的实际版本为准。</small></div>
+            <div class="info-item"><span>运行时</span><strong id="about-runtime">读取中…</strong><small>内置 Node.js、Python 和 OpenClaw 版本。</small></div>
+            <div class="info-item"><span>数据目录</span><strong id="about-data">读取中…</strong><small>供应商元数据、运行状态和安全存储索引所在位置。</small></div>
+            <div class="info-item"><span>核心流程</span><strong>三省六部</strong><small>皇上 → 太子 → 中书省 → 门下省 → 尚书省 → 六部 → 回奏。</small></div>
+          </div>
+          <div class="scope-note"><strong>发布说明</strong><span>Edict_InnerCourt 保留 EDICT 的协同内核，只在桌面壳层补充工作区、配置、执行保障、记录管理和本地运行时。当前包为未签名内部构建。</span></div>
+        </section>
       </section>
 
       <footer id="diagnostics" class="diagnostics">正在读取桌面运行状态…</footer>
+        </div>
+      </div>
     </main>
     <script type="module" src="./settings.js"></script>
   </body>

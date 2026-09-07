@@ -41,10 +41,12 @@ function isConfiguredSecret(summary: EdictDesktopChannelSummary | undefined, fie
 
 export default function ChannelConfig({
   initialChannel,
+  dispatchEnabled,
   onDispatchSaved,
   toast,
 }: {
   initialChannel?: string;
+  dispatchEnabled?: boolean;
   onDispatchSaved?: () => void;
   toast: (message: string, type?: 'ok' | 'err') => void;
 }) {
@@ -56,6 +58,10 @@ export default function ChannelConfig({
   const [status, setStatus] = useState<{ kind: 'ok' | 'err' | 'pending'; text: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
+  const [externalEnabled, setExternalEnabled] = useState(Boolean(dispatchEnabled && initialChannel));
+  const [configuringExternal, setConfiguringExternal] = useState(false);
+
+  const externalFormVisible = externalEnabled || configuringExternal;
 
   const selectedMeta = CHANNELS.find((channel) => channel.id === selectedChannel) || CHANNELS[0];
   const channelAccounts = useMemo(
@@ -103,15 +109,40 @@ export default function ChannelConfig({
     if (initialChannel && CHANNELS.some((channel) => channel.id === initialChannel)) {
       setSelectedChannel(initialChannel as ChannelId);
     }
-  }, [initialChannel]);
+    setExternalEnabled(Boolean(dispatchEnabled && initialChannel));
+    setConfiguringExternal(false);
+  }, [initialChannel, dispatchEnabled]);
 
   const update = (field: string, value: string) => setForm((previous) => ({ ...previous, [field]: value }));
 
+  const toggleExternalDispatch = async (enabled: boolean) => {
+    if (enabled) {
+      setConfiguringExternal(true);
+      setStatus({ kind: 'ok', text: `已打开配置流程；请填写${selectedMeta.label}信息，保存并完成连接验证后才会真正启用外部派发。` });
+      return;
+    }
+    setWorking(true);
+    setStatus({ kind: 'pending', text: '正在关闭外部派发，切换到桌面内置本地派发…' });
+    try {
+      const dispatch = await api.setDispatchChannel(selectedChannel, false);
+      if (!dispatch.ok) throw new Error(dispatch.error || '外部派发关闭失败。');
+      setExternalEnabled(false);
+      setConfiguringExternal(false);
+      setStatus({ kind: 'ok', text: '外部派发已关闭；后续任务将使用桌面内置本地派发。' });
+      toast('已切换到本地派发', 'ok');
+      onDispatchSaved?.();
+    } catch (error) {
+      setStatus({ kind: 'err', text: error instanceof Error ? error.message : '外部派发关闭失败。' });
+    } finally {
+      setWorking(false);
+    }
+  };
+
   const save = async () => {
     const currentBridge = bridge();
-    if (!currentBridge?.saveChannelAccount) return;
+    if (!currentBridge?.saveChannelAccount || !currentBridge.probeChannelAccount || !externalFormVisible) return;
     setWorking(true);
-    setStatus({ kind: 'pending', text: '正在安装渠道组件并保存安全配置…' });
+    setStatus({ kind: 'pending', text: '正在保存渠道信息，并验证渠道与 Gateway…' });
     try {
       const payload: Record<string, unknown> = { channel: selectedChannel, accountId };
       for (const [field, value] of Object.entries(form)) {
@@ -119,15 +150,24 @@ export default function ChannelConfig({
       }
       const result = await currentBridge.saveChannelAccount(payload);
       if (!result.ok) throw new Error(result.error || '渠道配置保存失败。');
-      const dispatch = await api.setDispatchChannel(selectedChannel);
+      const channelProbe = await currentBridge.probeChannelAccount({ channel: selectedChannel, accountId });
+      if (!channelProbe.ok) throw new Error(`渠道信息已保存，但连接验证未通过：${channelProbe.message}`);
+      const gatewayProbe = currentBridge.probeGateway ? await currentBridge.probeGateway() : { ok: true, message: 'Gateway 验证由当前运行环境处理。' };
+      if (!gatewayProbe.ok) throw new Error(`Gateway 验证未通过：${gatewayProbe.message}`);
+      const dispatch = await api.setDispatchChannel(selectedChannel, true);
       if (!dispatch.ok) throw new Error(dispatch.error || '渠道账号已保存，但派发渠道未能切换。');
-      setStatus({ kind: 'ok', text: '渠道已保存并设为自动派发渠道；请重载看板后让正在运行的进程读取新密钥。' });
+      setExternalEnabled(true);
+      setConfiguringExternal(false);
+      setStatus({ kind: 'ok', text: '渠道与 Gateway 验证通过，外部派发已开启；请重载看板使运行中的进程读取新配置。' });
       toast(`${selectedMeta.label} 已配置`, 'ok');
       onDispatchSaved?.();
       await loadAccounts();
     } catch (error) {
+      await api.setDispatchChannel(selectedChannel, false).catch(() => undefined);
+      setExternalEnabled(false);
+      setConfiguringExternal(false);
       setStatus({ kind: 'err', text: error instanceof Error ? error.message : '渠道配置保存失败。' });
-      toast('渠道配置未保存', 'err');
+      toast('渠道验证未通过，外部派发保持关闭', 'err');
     } finally {
       setWorking(false);
     }
@@ -135,12 +175,17 @@ export default function ChannelConfig({
 
   const probe = async () => {
     const currentBridge = bridge();
-    if (!currentBridge?.probeChannelAccount) return;
+    if (!currentBridge?.probeChannelAccount || !externalFormVisible) return;
     setWorking(true);
-    setStatus({ kind: 'pending', text: '正在请求 OpenClaw 检测渠道连接…' });
+    setStatus({ kind: 'pending', text: '正在验证渠道与 Gateway 连接…' });
     try {
       const result = await currentBridge.probeChannelAccount({ channel: selectedChannel, accountId });
-      setStatus({ kind: result.ok ? 'ok' : 'err', text: result.message });
+      if (!result.ok) {
+        setStatus({ kind: 'err', text: result.message });
+        return;
+      }
+      const gateway = currentBridge.probeGateway ? await currentBridge.probeGateway() : { ok: true, message: 'Gateway 验证由当前运行环境处理。' };
+      setStatus({ kind: gateway.ok ? 'ok' : 'err', text: gateway.ok ? '渠道与 Gateway 连接验证通过。' : `Gateway 验证未通过：${gateway.message}` });
     } catch (error) {
       setStatus({ kind: 'err', text: error instanceof Error ? error.message : '渠道检测失败。' });
     } finally {
@@ -156,6 +201,9 @@ export default function ChannelConfig({
     setStatus({ kind: 'pending', text: '正在移除渠道配置…' });
     try {
       await currentBridge.removeChannelAccount({ channel: selectedChannel, accountId });
+      await api.setDispatchChannel(selectedChannel, false).catch(() => undefined);
+      setExternalEnabled(false);
+      setConfiguringExternal(false);
       setForm(initialForm(selectedChannel));
       setStatus({ kind: 'ok', text: '渠道配置已移除；请重载看板后生效。' });
       toast('渠道配置已移除', 'ok');
@@ -191,17 +239,26 @@ export default function ChannelConfig({
         <div>
           <div className="mc-profile-kicker">运行时连接</div>
           <h2 id="mc-channel-title">派发渠道</h2>
-          <p>把原本需要在终端执行的 OpenClaw 渠道配置收进软件；密钥只保存在本机加密凭据库。</p>
+          <p>默认关闭外部派发，任务会使用桌面内置的本地派发。开启后必须填写对应平台信息并完成渠道与 Gateway 验证。</p>
         </div>
-        <div className={`mc-channel-badge ${selectedSummary?.configured && selectedSummary.enabled ? 'ready' : 'muted'}`}>
-          {selectedSummary?.configured && selectedSummary.enabled ? <CheckCircle2 size={15} /> : <CircleAlert size={15} />}
-          {selectedSummary?.configured && selectedSummary.enabled ? '已配置' : '待配置'}
+        <div className={`mc-channel-badge ${externalEnabled ? 'ready' : 'muted'}`}>
+          {externalEnabled ? <CheckCircle2 size={15} /> : <CircleAlert size={15} />}
+          {externalEnabled ? '已开启' : '已关闭'}
         </div>
       </div>
 
       <div className="mc-channel-toolbar">
+        <label className="mc-channel-toggle">
+          <input
+            type="checkbox"
+            checked={externalFormVisible}
+            disabled={working || loading}
+            onChange={(event) => void toggleExternalDispatch(event.target.checked)}
+          />
+          <span>开启外部派发渠道</span>
+        </label>
         <label className="mc-profile-field">
-          <span>自动派发使用</span>
+          <span>外部派发渠道</span>
           <select
             className="msel"
             aria-label="派发渠道"
@@ -220,14 +277,19 @@ export default function ChannelConfig({
             <PlugZap size={14} />
             {selectedSummary?.pluginInstalled ? '组件已安装' : '保存时自动安装组件'}
           </span>
-          <button className="btn btn-g" type="button" disabled={working || loading} onClick={() => void probe()}>
+          <button className="btn btn-g" type="button" disabled={working || loading || !externalEnabled} onClick={() => void probe()}>
             {working ? <LoaderCircle size={14} className="spin" /> : <Wifi size={14} />}
-            检测连接
+            验证连接
           </button>
         </div>
       </div>
 
-      <div className="mc-channel-form">
+      {!externalFormVisible && <div className="mc-channel-disabled">
+        <CircleAlert size={16} />
+        <div><strong>外部派发已关闭</strong><span>当前任务不会经过飞书、企业微信、Discord 等渠道，也不会等待外部 Gateway；会直接使用桌面内置本地派发。</span><span>需要使用外部渠道时，打开上方开关，填写对应信息并完成验证。</span></div>
+      </div>}
+
+      {externalFormVisible && <div className="mc-channel-form">
         <label className="mc-profile-field">
           <span>账号标识</span>
           <input
@@ -271,16 +333,19 @@ export default function ChannelConfig({
           <label className="mc-profile-field"><span>Signal 账号（E.164）</span><input className="mtext" value={form.account || ''} onChange={(event) => update('account', event.target.value)} placeholder="+8613800000000" /></label>
           <label className="mc-profile-field"><span>REST 服务地址</span><input className="mtext" value={form.httpUrl || ''} onChange={(event) => update('httpUrl', event.target.value)} placeholder="http://127.0.0.1:8080" /></label>
         </>}
-      </div>
+      </div>}
 
-      <div className="mc-channel-help"><ShieldCheck size={14} />{selectedMeta.help} 密钥不会进入 Git、项目文件或界面回显。</div>
-      {selectedChannel === 'feishu' && <div className="mc-channel-help secondary">飞书还需要在开放平台启用机器人，并把事件订阅方式设为 WebSocket；这些是平台侧权限，应用会在检测时告诉你缺哪一步。</div>}
+      {externalFormVisible && <>
+        <div className="mc-channel-help"><ShieldCheck size={14} />{selectedMeta.help} 密钥不会进入 Git、项目文件或界面回显。</div>
+        {selectedChannel === 'feishu' && <div className="mc-channel-help secondary">飞书还需要在开放平台启用机器人，并把事件订阅方式设为 WebSocket；这些是平台侧权限，应用会在检测时告诉你缺哪一步。</div>}
+        <div className="mc-channel-help secondary">外部派发还需要桌面版 Gateway 已完成认证。任一项验证失败，外部派发会自动保持关闭，不会影响桌面内置本地派发。</div>
+      </>}
 
       <div className="mc-channel-actions">
-        <button className="btn btn-p" type="button" disabled={working || loading} onClick={() => void save()}>
+        {externalFormVisible && <button className="btn btn-p" type="button" disabled={working || loading} onClick={() => void save()}>
           {working ? <LoaderCircle size={14} className="spin" /> : <CheckCircle2 size={14} />}
-          保存并启用
-        </button>
+          保存、验证并开启
+        </button>}
         <button className="btn btn-g" type="button" disabled={working || loading || !selectedSummary?.configured} onClick={() => void remove()}><Trash2 size={14} />移除配置</button>
         {needsReload && <button className="btn btn-g" type="button" disabled={working} onClick={() => void reload()}><RefreshCw size={14} />立即重载看板</button>}
       </div>

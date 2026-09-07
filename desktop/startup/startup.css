@@ -31,8 +31,14 @@ button { font: inherit; cursor: pointer; }
 h1 { margin: 0; font-size: 30px; line-height: 1.2; font-weight: 650; }
 #message { margin: 12px 0 0; color: #9eabbc; font-size: 14px; line-height: 1.6; }
 .progress-track { height: 4px; margin-top: 32px; overflow: hidden; border-radius: 99px; background: #202733; }
-.progress-track span { display: block; width: 55%; height: 100%; border-radius: inherit; background: #c4a261; transition: width .25s ease; }
+.progress-track span { display: block; width: 55%; height: 100%; border-radius: inherit; background: #c4a261; }
 .details { min-height: 38px; margin-top: 18px; color: #7d8998; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5; word-break: break-word; }
+.workspace-setup { margin-top: 26px; padding: 22px; border: 1px solid #293246; border-radius: 10px; background: #0f141d; }
+.workspace-setup h2 { margin: 0; font-size: 20px; line-height: 1.3; }
+.workspace-setup p { margin: 9px 0 0; color: #9eabbc; font-size: 13px; line-height: 1.6; }
+.path-card { margin-top: 16px; padding: 10px 12px; border: 1px solid #2b3547; border-radius: 6px; color: #d7e0eb; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.setup-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.setup-error { color: #ff8da2 !important; }
 .actions { display: flex; gap: 10px; margin-top: 24px; }
 button { min-height: 36px; padding: 0 14px; border: 1px solid #b89455; border-radius: 6px; background: #b89455; color: #11151b; font-size: 12px; font-weight: 750; }
 button.secondary { border-color: #3c4654; background: #151b24; color: #d7e0eb; }

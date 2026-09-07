@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 const userData = await mkdtemp(join(tmpdir(), 'innercourt-runtime-smoke-'))
+const workspacePath = await mkdtemp(join(tmpdir(), 'innercourt-runtime-workspace-'))
 const requests = []
 const MODEL = 'gpt-5.6-sol'
 const expectedVersion = JSON.parse(await readFile(resolve('package.json'), 'utf8')).version
@@ -68,6 +69,11 @@ async function ready() {
 try {
   app = await launch()
   assert.equal(await app.evaluate(({ app }) => app.getVersion()), expectedVersion)
+  const startup = await app.firstWindow()
+  await startup.evaluate(path => window.edictDesktop.useWorkspacePath(path), workspacePath)
+  await startup.evaluate(() => window.edictDesktop.useWorkspaceAsProject()).catch(error => {
+    if (!/Execution context was destroyed/.test(String(error))) throw error
+  })
   let page = await ready()
   const dependencies = await page.evaluate(() => window.edictDesktop.checkRuntime())
   assert(dependencies.ok, JSON.stringify(dependencies.errors))
@@ -173,7 +179,7 @@ try {
   assert.equal(policy.code, 0, JSON.stringify(policy))
   await mkdir('test-results', { recursive: true })
   await page.screenshot({ path: `test-results/packaged-runtime-${nativeOpenAIProfile ? 'openai' : 'custom'}-real-reply.png`, fullPage: true })
-  const snapshot = await readFile(join(userData, 'edict', 'runtime-dependencies.json'), 'utf8')
+  const snapshot = await readFile(join(firstDiagnostics.dataDirectory, '..', 'runtime-dependencies.json'), 'utf8')
   assert(!snapshot.includes('fixture-only'))
   await app.close()
   // Recreate old missing metadata, then verify upgrade repair and another reply.

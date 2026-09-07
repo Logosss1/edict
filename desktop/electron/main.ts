@@ -1,9 +1,9 @@
-import { app, BrowserWindow, Menu, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from 'electron'
 import { ChildProcessByStdio, spawn } from 'node:child_process'
 import { Readable } from 'node:stream'
 import { createServer } from 'node:net'
 import { chmodSync, existsSync, mkdirSync } from 'node:fs'
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
@@ -14,6 +14,7 @@ import {
   type ProviderDraft,
 } from './provider-store.js'
 import { ensureRuntimeData, type RuntimeDataPaths } from './runtime-data.js'
+import { WorkspaceStore, type WorkspaceAccessCheck, type WorkspaceRecord, type WorkspaceState } from './workspace-store.js'
 import { discoverRuntime, probeRuntime, type RuntimePaths } from '../main/runtime-dependencies.js'
 import {
   buildProviderEnvironment,
@@ -82,6 +83,7 @@ let dashboardWindow: BrowserWindow | undefined
 let settingsWindow: BrowserWindow | undefined
 let monitorWindow: BrowserWindow | undefined
 let providerStore: ProviderStore
+let workspaceStore: WorkspaceStore
 let runtimeData: RuntimeDataPaths | undefined
 let startupState: StartupState = 'starting'
 let startupError = ''
@@ -107,6 +109,12 @@ function bundledRuntimeRoot(): string {
   return development
     ? join(currentDirectory, '..', '..', '..', 'desktop', 'portable-runtime', process.arch)
     : join(process.resourcesPath, 'runtime')
+}
+
+function bundledOpenClawRoot(): string {
+  return development
+    ? join(currentDirectory, '..', '..', '..', 'desktop', 'portable-runtime', 'shared', 'openclaw')
+    : join(process.resourcesPath, 'runtime', 'openclaw')
 }
 
 function bundledRuntimePath(name: 'openclaw' | 'node'): string {
@@ -164,7 +172,12 @@ interface RuntimeOptions {
 }
 
 let runtimeOptions: RuntimeOptions = {
-  autoDispatch: process.env.EDICT_AUTO_DISPATCH === '1',
+  // A desktop workstation is expected to execute tasks after the user has
+  // configured a provider. Keep an explicit environment override for tests
+  // and diagnostics, but do not silently leave new tasks queued at 太子.
+  autoDispatch: process.env.EDICT_AUTO_DISPATCH
+    ? process.env.EDICT_AUTO_DISPATCH === '1'
+    : true,
   // Restarting the user's OpenClaw gateway is disruptive and is not needed
   // for persisting a model selection. Make it opt-in from the settings page.
   allowGatewayRestart: process.env.EDICT_SKIP_GATEWAY_RESTART === '0',
@@ -198,12 +211,29 @@ function startupDirectory(): string {
   return development ? join(currentDirectory, '..', '..', '..', 'desktop', 'startup') : join(app.getAppPath(), 'startup')
 }
 
+function builtinDirectory(): string {
+  return development ? join(currentDirectory, '..', '..', '..', 'desktop', 'builtin') : join(process.resourcesPath, 'builtin')
+}
+
 function monitorDirectory(): string {
   return development ? join(currentDirectory, '..', '..', '..', 'desktop', 'monitor') : join(app.getAppPath(), 'monitor')
 }
 
 function runtimeDirectory(): string {
-  return join(app.getPath('userData'), 'edict')
+  return workspaceStore
+    ? (workspaceStoreSnapshot?.activeWorkspace?.runtimeRoot || join(app.getPath('userData'), 'edict'))
+    : join(app.getPath('userData'), 'edict')
+}
+
+let workspaceStoreSnapshot: WorkspaceState | undefined
+
+async function refreshWorkspaceSnapshot(): Promise<WorkspaceState> {
+  workspaceStoreSnapshot = await workspaceStore.snapshot()
+  return workspaceStoreSnapshot
+}
+
+function activeWorkspace(): WorkspaceRecord | null {
+  return workspaceStoreSnapshot?.activeWorkspace || null
 }
 
 function runtimeOptionsPath(): string {
@@ -297,6 +327,7 @@ function markStartup(state: StartupState, error = ''): void {
 
 function runtimeEnvironment(upstream: string): NodeJS.ProcessEnv {
   const openclawHome = effectiveOpenClawHome()
+  const workspace = activeWorkspace()
   return {
     ...process.env,
     ...providerEnvironment,
@@ -311,6 +342,9 @@ function runtimeEnvironment(upstream: string): NodeJS.ProcessEnv {
     EDICT_OPENCLAW_HOME: openclawHome,
     OPENCLAW_HOME: openclawHome,
     OPENCLAW_CONFIG_PATH: effectiveOpenClawConfigPath(),
+    EDICT_OPENCLAW_RUNTIME_ROOT: bundledOpenClawRoot(),
+    EDICT_WORKSPACE_DIR: workspace?.path || '',
+    EDICT_PROJECT_DIR: workspace?.projectPath || '',
     EDICT_USE_WORKSPACE_DATA: '0',
     EDICT_AUTO_DISPATCH: runtimeOptions.autoDispatch ? '1' : '0',
     // Model changes remain persisted and validated in the isolated desktop
@@ -703,6 +737,30 @@ async function probeChannelAccount(payload: unknown): Promise<{ ok: boolean; mes
   }
 }
 
+async function probeGateway(): Promise<{ ok: boolean; message: string }> {
+  const result = await runOpenClawCommand(['gateway', 'probe', '--json', '--timeout', '5_000'], 15_000)
+  let parsed: Record<string, unknown> = {}
+  try {
+    const firstObject = result.stdout.indexOf('{')
+    parsed = firstObject >= 0 ? asObject(JSON.parse(result.stdout.slice(firstObject))) : {}
+  } catch {
+    parsed = {}
+  }
+  const targets = Array.isArray(parsed.targets) ? parsed.targets : []
+  const target = targets.length > 0 ? asObject(targets[0]) : {}
+  const connect = asObject(target.connect)
+  const rpcOk = connect.rpcOk === true
+  if (result.code === 0 && parsed.ok === true && rpcOk) {
+    return { ok: true, message: 'Gateway 连接与认证验证通过。' }
+  }
+  const detail = typeof connect.error === 'string' && connect.error.trim()
+    ? connect.error.trim()
+    : typeof parsed.error === 'string' && parsed.error.trim()
+      ? parsed.error.trim()
+      : result.stderr || result.stdout || 'Gateway 未通过连接验证。'
+  return { ok: false, message: redactedChannelCommandError(detail) }
+}
+
 async function stopDashboard(): Promise<void> {
   const child = dashboardProcess
   if (!child) return
@@ -725,6 +783,7 @@ async function restartDashboard(): Promise<void> {
   markStartup('starting')
   try {
     await stopDashboard()
+    await prepareRuntimeForWorkspace()
     await refreshProviderEnvironment()
     await refreshChannelEnvironment()
     await startDashboard()
@@ -742,6 +801,97 @@ async function restartDashboard(): Promise<void> {
   } finally {
     restarting = false
   }
+}
+
+const BUILTIN_SKILL_TARGETS: Array<{ name: string; agents: string[] }> = [
+  { name: 'edict-triage', agents: ['taizi'] },
+  { name: 'edict-planning', agents: ['zhongshu'] },
+  { name: 'edict-review', agents: ['menxia', 'xingbu'] },
+  { name: 'edict-coding', agents: ['bingbu', 'gongbu'] },
+  { name: 'edict-docs', agents: ['libu'] },
+]
+
+async function ensureBuiltInCapabilities(): Promise<void> {
+  const sourceRoot = builtinDirectory()
+  const openclawHome = effectiveOpenClawHome()
+  let copiedSkills = 0
+  for (const skill of BUILTIN_SKILL_TARGETS) {
+    const source = join(sourceRoot, 'skills', skill.name, 'SKILL.md')
+    if (!existsSync(source)) continue
+    for (const agentId of skill.agents) {
+      const destination = join(openclawHome, `workspace-${agentId}`, 'skills', skill.name, 'SKILL.md')
+      if (existsSync(destination)) continue
+      await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
+      await copyFile(source, destination)
+      await chmod(destination, 0o600)
+      copiedSkills += 1
+    }
+  }
+
+  const mcpScript = join(sourceRoot, 'mcp', 'edict-workspace-server.mjs')
+  const node = runtimeDependencies.nodePath || bundledRuntimePath('node') || 'node'
+  if (!existsSync(mcpScript)) {
+    console.warn('[edict] 内置 MCP 文件不存在，跳过内置能力安装')
+    return
+  }
+
+  const store = openClawConfigStore()
+  const snapshot = await store.snapshot()
+  const existing = new Set(snapshot.mcpServers.map((server) => server.name))
+  const cwd = activeWorkspace()?.projectPath || activeWorkspace()?.path
+  const defaults: Array<[string, McpServerInput]> = [
+    ['edict-workspace', {
+      enabled: true,
+      transport: 'stdio',
+      command: node,
+      args: [mcpScript, '--mode', 'workspace'],
+      ...(cwd ? { cwd } : {}),
+      env: {
+        EDICT_OPENCLAW_RUNTIME_ROOT: bundledOpenClawRoot(),
+        ...(cwd ? { EDICT_PROJECT_DIR: cwd } : {}),
+      },
+      timeout: 30_000,
+    }],
+    ['edict-memory', {
+      enabled: true,
+      transport: 'stdio',
+      command: node,
+      args: [mcpScript, '--mode', 'memory'],
+      ...(cwd ? { cwd } : {}),
+      env: {
+        EDICT_OPENCLAW_RUNTIME_ROOT: bundledOpenClawRoot(),
+        ...(cwd ? { EDICT_PROJECT_DIR: cwd } : {}),
+      },
+      timeout: 30_000,
+    }],
+  ]
+  let configuredMcp = 0
+  for (const [name, config] of defaults) {
+    if (existing.has(name)) continue
+    await store.upsertMcpServer(name, config)
+    configuredMcp += 1
+  }
+  if (copiedSkills || configuredMcp) {
+    console.log(`[edict] 内置能力已就绪：${copiedSkills} 个 Agent Skill 文件，${configuredMcp} 个 MCP 配置`)
+  }
+}
+
+async function prepareRuntimeForWorkspace(): Promise<void> {
+  const workspace = activeWorkspace()
+  if (!workspace?.projectPath) throw new Error('请先选择工作区和项目')
+  const runtimeStartedAt = Date.now()
+  runtimeData = await ensureRuntimeData(upstreamDirectory(), runtimeDirectory())
+  configureModelCatalog(JSON.parse(await readFile(join(upstreamDirectory(), 'scripts', 'model_capabilities.json'), 'utf8')).models)
+  // Provider profiles are global Settings, while each workspace owns its
+  // runtime config. Re-project saved provider model definitions whenever a
+  // workspace becomes active so configuring Settings before first workspace
+  // selection remains valid.
+  for (const provider of await providerStore.list()) {
+    await syncProviderToOpenClaw(effectiveOpenClawConfigPath(), { ...provider, models: provider.modelDefinitions })
+  }
+  await repairModelCapabilities(effectiveOpenClawConfigPath())
+  await ensureBuiltInCapabilities()
+  startupTimings.runtimeDataMs = Date.now() - runtimeStartedAt
 }
 
 async function startDashboard(): Promise<void> {
@@ -862,7 +1012,9 @@ async function requestedThinking(stored: string, model?: string): Promise<string
 }
 
 function diagnostics() {
+  const workspace = activeWorkspace()
   return {
+    version: app.getVersion(),
     startupState,
     startupError,
     dashboardUrl,
@@ -885,6 +1037,20 @@ function diagnostics() {
     startupTimings: { ...startupTimings },
     upstream: upstreamDirectory(),
     settings: settingsDirectory(),
+    workspace: workspace ? {
+      id: workspace.id,
+      name: workspace.name,
+      path: workspace.path,
+      projectPath: workspace.projectPath,
+      projects: workspace.projects,
+    } : null,
+    workspaces: workspaceStoreSnapshot?.workspaces.map((item) => ({
+      id: item.id,
+      name: item.name,
+      path: item.path,
+      projectPath: item.projectPath,
+      projects: item.projects,
+    })) || [],
   }
 }
 
@@ -919,7 +1085,16 @@ function createDashboardWindow(): BrowserWindow {
   return window
 }
 
-function createSettingsWindow(tab?: 'dependencies'): BrowserWindow {
+type SettingsTab = 'general' | 'providers' | 'agents' | 'runtime' | 'dependencies' | 'skills' | 'mcp' | 'ops' | 'about'
+const SETTINGS_TABS = new Set<SettingsTab>(['general', 'providers', 'agents', 'runtime', 'dependencies', 'skills', 'mcp', 'ops', 'about'])
+
+function normalizeSettingsTab(value: unknown): SettingsTab | undefined {
+  return typeof value === 'string' && SETTINGS_TABS.has(value as SettingsTab)
+    ? value as SettingsTab
+    : undefined
+}
+
+function createSettingsWindow(tab?: SettingsTab): BrowserWindow {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     if (tab) settingsWindow.webContents.send('settings:tab', tab)
     settingsWindow.focus()
@@ -1007,6 +1182,58 @@ function buildMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+async function startWorkspaceRuntime(): Promise<void> {
+  const state = await refreshWorkspaceSnapshot()
+  if (!state.activeWorkspace?.projectPath) return
+  if (dashboardProcess && !dashboardProcess.killed) {
+    await restartDashboard()
+    return
+  }
+  if (!startupPromise) startupPromise = boot().finally(() => { startupPromise = undefined })
+  await startupPromise
+}
+
+async function restartForWorkspace(): Promise<void> {
+  const state = await refreshWorkspaceSnapshot()
+  if (!state.activeWorkspace?.projectPath) {
+    await showWorkspaceSetup()
+    return
+  }
+  if (dashboardProcess && !dashboardProcess.killed) {
+    await restartDashboard()
+    return
+  }
+  await startWorkspaceRuntime()
+}
+
+async function showWorkspaceSetup(): Promise<void> {
+  if (dashboardProcess && !dashboardProcess.killed) {
+    restarting = true
+    try {
+      await stopDashboard()
+    } finally {
+      restarting = false
+    }
+    dashboardUrl = ''
+  }
+  markStartup('starting')
+  startupError = ''
+  if (dashboardWindow && !dashboardWindow.isDestroyed()) {
+    await dashboardWindow.loadFile(join(startupDirectory(), 'index.html'))
+    dashboardWindow.show()
+  }
+}
+
+async function chooseDirectory(title: string, createDirectory: boolean): Promise<string | null> {
+  const result = await dialog.showOpenDialog({
+    title,
+    properties: createDirectory
+      ? ['openDirectory', 'createDirectory', 'showHiddenFiles']
+      : ['openDirectory', 'showHiddenFiles'],
+  })
+  return result.canceled ? null : result.filePaths[0] || null
+}
+
 function registerIpc(): void {
   ipcMain.handle('dashboard:get-url', () => dashboardUrl)
   ipcMain.handle('dashboard:show', () => {
@@ -1015,7 +1242,7 @@ function registerIpc(): void {
     return { ok: true }
   })
   ipcMain.handle('settings:show', (_event, tab: unknown) => {
-    createSettingsWindow(tab === 'dependencies' ? tab : undefined).show()
+    createSettingsWindow(normalizeSettingsTab(tab)).show()
     return { ok: true }
   })
   ipcMain.handle('monitor:show', () => {
@@ -1023,6 +1250,67 @@ function registerIpc(): void {
     return { ok: true }
   })
   ipcMain.handle('app:diagnostics', () => diagnostics())
+  ipcMain.handle('workspace:state', async () => {
+    await refreshWorkspaceSnapshot()
+    return workspaceStoreSnapshot
+  })
+  ipcMain.handle('workspace:preflight', async (_event, payload: unknown) => {
+    const requested = payload && typeof payload === 'object' ? (payload as { path?: unknown }).path : undefined
+    const active = activeWorkspace()
+    const path = typeof requested === 'string' && requested.trim()
+      ? requested
+      : active?.projectPath || active?.path
+    if (!path) {
+      return { ok: false, path: '', detail: '尚未选择工作区或项目目录。' } satisfies Partial<WorkspaceAccessCheck>
+    }
+    return workspaceStore.checkAccess(path)
+  })
+  ipcMain.handle('workspace:open-permissions', async () => {
+    if (process.platform !== 'darwin') return { ok: false, message: '该权限入口只适用于 macOS。' }
+    const url = 'x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders'
+    const error = await shell.openExternal(url).catch((reason) => reason)
+    if (error instanceof Error) return { ok: false, message: error.message }
+    return { ok: true }
+  })
+  ipcMain.handle('workspace:choose', async (_event, payload: unknown) => {
+    const mode = payload && typeof payload === 'object' && (payload as { mode?: unknown }).mode === 'existing'
+      ? 'existing'
+      : 'create'
+    const path = await chooseDirectory(mode === 'create' ? '创建或选择工作区文件夹' : '选择已有工作区文件夹', mode === 'create')
+    if (!path) return { canceled: true, state: await refreshWorkspaceSnapshot() }
+    await workspaceStore.chooseWorkspace(path, mode === 'create')
+    const state = await refreshWorkspaceSnapshot()
+    if (state.activeWorkspace?.projectPath) await startWorkspaceRuntime()
+    else await showWorkspaceSetup()
+    return { ok: true, state: workspaceStoreSnapshot, diagnostics: diagnostics() }
+  })
+  // Used by the native startup flow and by automated smoke tests. The normal
+  // user path is workspace:choose, which always opens a native folder picker.
+  ipcMain.handle('workspace:use-path', async (_event, payload: unknown) => {
+    const path = payload && typeof payload === 'object' ? (payload as { path?: unknown }).path : undefined
+    if (typeof path !== 'string') throw new Error('工作区路径不能为空')
+    await workspaceStore.chooseWorkspace(path, true)
+    await refreshWorkspaceSnapshot()
+    return { ok: true, state: workspaceStoreSnapshot }
+  })
+  ipcMain.handle('workspace:activate', async (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id) throw new Error('工作区标识不能为空')
+    await workspaceStore.activate(id)
+    await restartForWorkspace()
+    return { ok: true, state: workspaceStoreSnapshot, diagnostics: diagnostics() }
+  })
+  ipcMain.handle('workspace:choose-project', async () => {
+    const path = await chooseDirectory('选择项目文件夹', false)
+    if (!path) return { canceled: true, state: await refreshWorkspaceSnapshot() }
+    await workspaceStore.setProject(path)
+    await restartForWorkspace()
+    return { ok: true, state: workspaceStoreSnapshot, diagnostics: diagnostics() }
+  })
+  ipcMain.handle('workspace:use-root-project', async () => {
+    await workspaceStore.useWorkspaceAsProject()
+    await restartForWorkspace()
+    return { ok: true, state: workspaceStoreSnapshot, diagnostics: diagnostics() }
+  })
   ipcMain.handle('runtime:check', async () => {
     await refreshRuntimeDependencies()
     return { ...await probeRuntime(runtimeDependencies, runtimeEnvironment(upstreamDirectory())), overrides: runtimePaths }
@@ -1110,6 +1398,7 @@ function registerIpc(): void {
   ipcMain.handle('openclaw:channel-save', (_event, payload: unknown) => saveChannelAccount(payload))
   ipcMain.handle('openclaw:channel-remove', (_event, payload: unknown) => removeChannelAccount(payload))
   ipcMain.handle('openclaw:channel-probe', (_event, payload: unknown) => probeChannelAccount(payload))
+  ipcMain.handle('openclaw:gateway-probe', () => probeGateway())
   ipcMain.handle('app:set-runtime-options', async (_event, payload: unknown) => {
     const input = payload as { autoDispatch?: boolean; allowGatewayRestart?: boolean }
     if (typeof input.autoDispatch === 'boolean') runtimeOptions.autoDispatch = input.autoDispatch
@@ -1207,11 +1496,7 @@ async function boot(): Promise<void> {
   markStartup('starting')
   try {
     await loadRuntimeOptions()
-    const runtimeStartedAt = Date.now()
-    runtimeData = await ensureRuntimeData(upstreamDirectory(), runtimeDirectory())
-    configureModelCatalog(JSON.parse(await readFile(join(upstreamDirectory(), 'scripts', 'model_capabilities.json'), 'utf8')).models)
-    await repairModelCapabilities(effectiveOpenClawConfigPath())
-    startupTimings.runtimeDataMs = Date.now() - runtimeStartedAt
+    await prepareRuntimeForWorkspace()
     await refreshProviderEnvironment()
     await refreshChannelEnvironment()
     await syncAgentConfig()
@@ -1236,15 +1521,20 @@ app.whenReady().then(() => {
   app.setName('Edict_InnerCourt')
   startupTimings.appReadyMs = Date.now() - processStartedAt
   providerStore = new ProviderStore(app.getPath('userData'))
+  workspaceStore = new WorkspaceStore(app.getPath('userData'))
   registerIpc()
   buildMenu()
   createDashboardWindow()
-  startupPromise = boot().finally(() => { startupPromise = undefined })
+  void refreshWorkspaceSnapshot().then(() => {
+    if (workspaceStoreSnapshot?.activeWorkspace?.projectPath) {
+      startupPromise = boot().finally(() => { startupPromise = undefined })
+    }
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createDashboardWindow()
-      if (startupState !== 'ready' && !startupPromise) {
+      if (startupState !== 'ready' && !startupPromise && workspaceStoreSnapshot?.activeWorkspace?.projectPath) {
         startupPromise = boot().finally(() => { startupPromise = undefined })
       }
     }

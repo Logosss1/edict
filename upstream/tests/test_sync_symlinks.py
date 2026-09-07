@@ -225,3 +225,19 @@ class TestSyncScriptsToWorkspaces:
                     'self-referential symlink bug has regressed'
                 )
                 assert script.stat().st_size > 0, f'{script.name} content was lost'
+
+
+def test_sync_data_to_workspaces_links_canonical_store(project):
+    assert sac.sync_data_to_workspaces(project.home / '.openclaw', project.data) == 2
+    linked = project.home / '.openclaw' / 'workspace-aaa' / 'data'
+    assert linked.is_symlink()
+    assert linked.resolve() == project.data.resolve()
+
+
+def test_sync_data_to_workspaces_does_not_remove_existing_directory(project):
+    existing = project.home / '.openclaw' / 'workspace-aaa' / 'data'
+    existing.mkdir(parents=True)
+    (existing / 'old.json').write_text('{}')
+    assert sac.sync_data_to_workspaces(project.home / '.openclaw', project.data) == 1
+    assert not existing.is_symlink()
+    assert (existing / 'old.json').exists()

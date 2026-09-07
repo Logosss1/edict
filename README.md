@@ -29,8 +29,10 @@ Edict_InnerCourt is the macOS desktop adaptation of [EDICT](https://github.com/c
 This is a packaging and workflow project, not a replacement for that institutional design. The main additions are the parts needed to make the system practical on a new Mac:
 
 - a distributable Electron application with bundled Node.js, Python, and OpenClaw runtimes;
+- a workspace-first desktop workbench: choose or create a workspace folder, then bind the project folder before work can begin;
 - first-run provider, model, Agent, runtime, and dispatch-channel configuration inside the app;
 - a persistent, single-room Inner Court that can inspect the live work of existing Agents;
+- built-in EDICT workflow Skills plus local workspace and memory MCP servers, provisioned per workspace without API keys;
 - safer deletion and cleanup for finished records and their attachments;
 - isolated local data, secure credential storage, diagnostics, and release documentation.
 
@@ -51,12 +53,13 @@ The desktop layer changes how the system is installed and operated. It does not 
 | Area | Original EDICT | Edict_InnerCourt |
 | --- | --- | --- |
 | Distribution | Clone the repository and prepare OpenClaw, Python, and Node.js on the machine. | Download a macOS ZIP with the runtime bundle included. |
+| Work boundary | The repository and OpenClaw workspaces are prepared separately by local scripts and conventions. | The app requires a workspace and project selection before opening the workbench, and scopes the local runtime to that workspace. |
 | First setup | Use shell scripts and OpenClaw commands to create workspaces, register Agents, sync data, and restart services. | Use the in-app readiness checks and Settings flow; the app creates its isolated runtime data on first launch. |
 | Provider and model setup | Configure OpenClaw credentials and model files as part of the local environment. | Configure provider endpoints, credentials, model discovery, Agent bindings, and thinking depth in Settings. |
 | Dispatch channels | Configure OpenClaw channel plugins and account fields outside the desktop UI. | Configure supported Feishu, Telegram, Discord, Slack, and Signal accounts in **Dispatch Channel**. |
 | Inner Court | Repository/dashboard workflow without a packaged macOS boundary for one shared live room. | One unfinished discussion at a time; new rooms reuse each Agent's canonical main session and can ask for read-only live progress. |
 | History management | The desktop edition adds consistent deletion controls. | Finished Inner Court, Court Discussion, task, memorial, session, and detail records can be removed with confirmation and cleanup. |
-| Runtime safety | The original project provides the orchestration logic and scripts. | Safe mode, isolated user data, secure secrets, attachment isolation, runtime diagnostics, and packaged launch behavior are added around it. |
+| Runtime safety | The original project provides the orchestration logic and scripts. | Isolated user data, secure secrets, attachment isolation, runtime diagnostics, cancellable dispatch, and packaged launch behavior are added around it. |
 
 ## The core workflow
 
@@ -90,6 +93,7 @@ The Chancellery is not decorative: it is the quality gate between planning and e
 | Area | What it provides |
 | --- | --- |
 | **Task Board** | Track decree status, department ownership, progress, retries, pause, cancellation, and final reports. |
+| **Desktop Workbench** | Start from a required workspace and project, submit a formal decree inside the app, and keep the active project visible while the original task flow runs. |
 | **Monitor** | Inspect Agent health, activity, task counts, and runtime observations. |
 | **Models and Providers** | Configure OpenAI-compatible endpoints, discover or define models, bind a model per Agent, and select supported thinking depth. |
 | **Dispatch Channel** | Configure named Feishu, Telegram, Discord, Slack, and Signal accounts, install the supported channel component on first save, probe the connection, remove accounts, and reload the dashboard. |
@@ -98,6 +102,7 @@ The Chancellery is not decorative: it is the quality gate between planning and e
 | **Memorials and Sessions** | Review completed work, task history, session details, and terminal records; delete finished records when they are no longer needed. |
 | **Attachments** | Select, paste, drag, upload, retry, and download files with room-scoped isolation and size limits. |
 | **Skills and Agent roles** | Keep the upstream Agent role and Skills model available to the packaged dashboard and runtime. |
+| **Built-in capabilities** | Install audited EDICT triage, planning, review, engineering, and documentation Skills, plus local workspace and memory MCP tools on first workspace activation. |
 
 ## Desktop architecture
 
@@ -135,12 +140,16 @@ The app keeps ordinary provider metadata separate from secrets. Provider and cha
 
 Open [GitHub Releases](https://github.com/Logosss1/Edict_InnerCourt/releases/latest):
 
-- `Edict_InnerCourt-0.2.1-arm64-mac.zip` for Apple Silicon Macs (M-series);
-- `Edict_InnerCourt-0.2.1-mac.zip` for Intel Macs.
+- `Edict_InnerCourt-0.3.1-arm64-mac.zip` for Apple Silicon Macs (M-series);
+- `Edict_InnerCourt-0.3.1-mac.zip` for Intel Macs.
 
 Extract the ZIP and open `Edict_InnerCourt.app`.
 
-### 2. Complete the in-app setup
+### 2. Choose the workspace and project
+
+On first launch, choose or create a workspace folder. Then choose the project folder that the current work should operate on. The app will not enter the workbench until both are set. Switching workspaces creates a separate local EDICT runtime boundary; the selected project is recorded in each new task and included in Agent dispatch context.
+
+### 3. Complete the in-app setup
 
 In **Settings**:
 
@@ -152,9 +161,9 @@ In **Settings**:
 
 The platform-side work is still external: creating a Feishu app or bot, granting permissions, enabling WebSocket or Socket Mode, and copying the credentials into the app. The desktop app cannot create an account on a third-party platform for you.
 
-### 3. Issue a decree
+### 4. Issue a decree
 
-Once setup is ready, use the normal EDICT flow:
+Once setup is ready, use **Run → Issue a decree** in the desktop workbench, or use a configured external channel. The normal EDICT flow remains:
 
 ```text
 decree → Crown Prince triage → Secretariat plan
@@ -162,7 +171,7 @@ decree → Crown Prince triage → Secretariat plan
       → Ministry execution → report and audit trail
 ```
 
-Safe mode is the default for a fresh install. Do not enable automatic execution until the provider, models, Agents, and dispatch settings have been checked.
+After a provider and model are configured, desktop automatic dispatch is enabled by default. With no external channel selected, the bundled OpenClaw runs locally; when a Feishu, Telegram, Discord, Slack, or Signal channel is selected, dispatch uses the configured OpenClaw Gateway. You can pause automatic dispatch in **Settings → Runtime**.
 
 ## Inner Court workflow
 
@@ -198,7 +207,23 @@ The app protects active tasks, sessions, and discussions from accidental deletio
 - **Attachment isolation:** uploaded files are scoped to the room/message and cleaned safely after terminal records are deleted.
 - **Failure recovery:** partial runs preserve successful replies, pause unfinished work, surface the actual error, and allow a retry without silently replaying completed work.
 - **Capability-aware models:** the UI checks model capabilities and prevents unsupported thinking-depth requests from being sent blindly.
-- **Safe first launch:** demo data does not automatically become a real external dispatch; the user explicitly enables execution after setup.
+- **Desktop execution:** once a provider/model is configured, tasks leave the Taizi queue automatically; local dispatch does not require a separately started Gateway, while external channels retain the Gateway delivery path.
+- **Real interruption:** pause and cancel actions update the task atomically and terminate the active dispatch process when one exists; late process output cannot resurrect a cancelled task.
+- **Built-in capabilities:** workflow Skills and workspace-scoped MCP tools are installed idempotently on first workspace activation without bundled provider keys or network credentials.
+
+## Open-source references and adaptation boundaries
+
+Edict_InnerCourt learns from several mature open-source projects, but keeps the EDICT orchestration model as its source of truth:
+
+| Reference | What we learn | How Edict_InnerCourt applies it |
+| --- | --- | --- |
+| [OpenHands](https://github.com/OpenHands/OpenHands) | Workspace boundaries, visible execution context, and separation between the control center and execution environment. | The app requires a workspace/project, shows the active Agent, project scope, Git changes, outputs, tests, and recent activity in the execution inspector. |
+| [LobeHub](https://github.com/lobehub/lobehub) | A workbench-oriented shell that separates operating, history, settings, and Agent operations. | The desktop rail separates **Run**, **Execution Guard**, **Archive**, **Skills & MCP**, **Execution Monitor**, and **Settings**; Inner Court remains a workflow page, not a second task system. |
+| [shadcn/ui](https://github.com/shadcn-ui/ui) | Composable UI, local ownership of styles, and design tokens that can be extended without a black-box theme. | The dashboard uses local CSS tokens and small reusable state patterns. It does not add the shadcn generator or a new runtime dependency. |
+| [Radix Primitives](https://github.com/radix-ui/primitives) | Semantic controls, protected actions, focus handling, and explicit loading/success/error states. | Cancel, pause, resume, delete, and approval actions have real state transitions, confirmation paths, and visible asynchronous feedback. |
+| [Ant Design](https://github.com/ant-design/ant-design) | Dense operational information, filters, status colors, and predictable action areas. | The task board and monitor keep compact cards, active/archive/all filters, six-ministry health, and actionable blocking details while retaining the EDICT visual language. |
+
+These are implementation references, not replacement frameworks. See [`OPEN_SOURCE_ADOPTION_PLAN.md`](OPEN_SOURCE_ADOPTION_PLAN.md) for the project-by-project scope, expected results, file-level landing points, and deferred reference slots. The Three Departments and Six Ministries workflow remains unchanged.
 
 ## Troubleshooting and FAQ
 
@@ -221,6 +246,10 @@ Thinking levels are capability-dependent. Choose one of the levels shown for the
 ### The dispatch channel is saved but messages do not arrive
 
 Run **Detect connection**, verify the third-party platform permissions, confirm WebSocket or Socket Mode settings, and use **Reload dashboard** after changing a channel secret. The app configures the supported channel account; it cannot repair permissions inside the external platform.
+
+### A decree remains at “Crown Prince · triage”
+
+On the desktop, this should only be a short handoff state. Check **Settings → Runtime** and confirm automatic dispatch is enabled, then check the provider/model readiness. If the local run cannot start, the task is marked **Blocked** with the actual reason and can be resumed after the configuration is corrected. External channels additionally require a running OpenClaw Gateway.
 
 ### Why does a second Inner Court room fail to open?
 
@@ -262,6 +291,7 @@ Edict_InnerCourt/
 ├── desktop/
 │   ├── electron/             # Electron main process, preload, secure storage, lifecycle
 │   ├── main/                 # runtime discovery and OpenClaw integration
+│   ├── builtin/               # bundled workflow Skills and local MCP servers
 │   ├── e2e/                  # packaged-app and dashboard smoke tests
 │   ├── tests/                # TypeScript integration/unit tests
 │   ├── settings/             # standalone desktop Settings window
@@ -281,6 +311,8 @@ Edict_InnerCourt/
 ├── README.md                # default English documentation
 └── README.zh-CN.md          # Chinese documentation
 ```
+
+The `upstream/` directory is an intentional repository layout choice: it contains the EDICT-derived core that this desktop edition packages. GitHub does not require a directory with this name, and a fork does not have to keep an `upstream` remote. Renaming it is possible, but it would require updating the desktop packaging filters, runtime paths, dashboard imports, and tests; keeping the name is the lower-risk option while the core remains the original EDICT foundation.
 
 ## Security, support, and attribution
 

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Edict InnerCourt icon">
+  <rect width="1024" height="1024" rx="224" fill="#08101c"/>
+  <rect x="42" y="42" width="940" height="940" rx="190" fill="none" stroke="#d4b36a" stroke-width="20"/>
+  <circle cx="512" cy="512" r="294" fill="#102338" stroke="#d4b36a" stroke-width="18"/>
+  <path d="M332 438 512 292l180 146v248c0 28-22 50-50 50H382c-28 0-50-22-50-50V438Z" fill="#173b4a" stroke="#8bd0b5" stroke-width="18" stroke-linejoin="round"/>
+  <path d="M392 454h240M392 530h240M392 606h240" fill="none" stroke="#d4b36a" stroke-width="22" stroke-linecap="round"/>
+  <path d="M512 366v306" fill="none" stroke="#8bd0b5" stroke-width="20" stroke-linecap="round"/>
+  <path d="M432 672v-76c0-44 36-80 80-80s80 36 80 80v76" fill="#08101c" stroke="#d4b36a" stroke-width="18"/>
+  <circle cx="512" cy="438" r="18" fill="#d4b36a"/>
+</svg>

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 const userData = await mkdtemp(join(tmpdir(), 'innercourt-smoke-'))
+const workspacePath = await mkdtemp(join(tmpdir(), 'innercourt-workspace-'))
 const launch = (executable = process.env.EDICT_SMOKE_APP) => electron.launch({
   ...(executable ? { executablePath: executable, args: [] } : { args: [resolve('.')] }),
   env: { ...process.env, EDICT_USER_DATA_DIR: userData, EDICT_AUTO_DISPATCH: '0', EDICT_SKIP_GATEWAY_RESTART: '1' },
@@ -26,6 +27,10 @@ const restoreClipboard = () => app.evaluate(({ clipboard }, snapshot) => {
 }, clipboardSnapshot)
 try {
   const dashboard = await app.firstWindow()
+  await dashboard.evaluate(path => window.edictDesktop.useWorkspacePath(path), workspacePath)
+  await dashboard.evaluate(() => window.edictDesktop.useWorkspaceAsProject()).catch(error => {
+    if (!/Execution context was destroyed/.test(String(error))) throw error
+  })
   await expect.poll(async () => {
     try {
       const status = await dashboard.evaluate(() => window.edictDesktop.getDiagnostics())

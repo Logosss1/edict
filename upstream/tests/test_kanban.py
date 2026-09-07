@@ -1,5 +1,6 @@
 """tests for scripts/kanban_update.py"""
 import json
+import importlib.util
 import pathlib
 import sys
 
@@ -8,6 +9,33 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import kanban_update as kb
+
+
+def test_desktop_data_dir_is_authoritative(tmp_path, monkeypatch):
+    """Desktop data must not fall back to the bundled upstream/data tree."""
+    code_root = tmp_path / 'bundled'
+    (code_root / 'scripts').mkdir(parents=True)
+    data_root = tmp_path / 'runtime-data'
+    data_root.mkdir()
+    task_id = 'DESKTOP-DATA-001'
+    tasks_file = data_root / 'tasks_source.json'
+    tasks_file.write_text(json.dumps([
+        {'id': task_id, 'title': '桌面数据根目录测试', 'state': 'Doing', 'org': '工部'},
+    ], ensure_ascii=False), encoding='utf-8')
+
+    monkeypatch.setenv('EDICT_HOME', str(code_root))
+    monkeypatch.setenv('EDICT_DATA_DIR', str(data_root))
+    spec = importlib.util.spec_from_file_location(
+        'kanban_update_desktop_data_test', SCRIPTS / 'kanban_update.py'
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    assert module.TASKS_FILE == data_root / 'tasks_source.json'
+    module.cmd_progress(task_id, 'Agent 已读取桌面运行时的共享任务', '')
+    saved = json.loads(tasks_file.read_text(encoding='utf-8'))
+    assert saved[0]['now'] == 'Agent 已读取桌面运行时的共享任务'
 
 
 def test_create_and_get(tmp_path):
@@ -33,7 +61,7 @@ def test_move_state(tmp_path):
     """kanban move changes task state."""
     tasks_file = tmp_path / "tasks_source.json"
     tasks_file.write_text(json.dumps([
-        {"id": "T-1", "title": "test", "state": "Inbox"}
+        {"id": "T-1", "title": "test", "state": "Inbox", "org": "工部"}
     ], ensure_ascii=False), encoding="utf-8")
 
     original = kb.TASKS_FILE
@@ -42,6 +70,27 @@ def test_move_state(tmp_path):
         kb.cmd_state("T-1", "Doing")
         tasks = json.loads(tasks_file.read_text(encoding="utf-8"))
         assert tasks[0]["state"] == "Doing"
+        assert tasks[0]["org"] == "工部"
+    finally:
+        kb.TASKS_FILE = original
+
+
+def test_move_state_fills_fixed_ministry_for_legacy_task(tmp_path):
+    """Legacy execution records cannot enter Doing without a fixed Agent."""
+    tasks_file = tmp_path / "tasks_source.json"
+    tasks_file.write_text(json.dumps([
+        {"id": "T-1B", "title": "开发网页并完成测试", "state": "Assigned", "org": "尚书省"}
+    ], ensure_ascii=False), encoding="utf-8")
+
+    original = kb.TASKS_FILE
+    kb.TASKS_FILE = tasks_file
+    try:
+        kb.cmd_state("T-1B", "Doing")
+        task = json.loads(tasks_file.read_text(encoding="utf-8"))[0]
+        assert task["state"] == "Doing"
+        assert task["org"] == "兵部"
+        assert task["targetDept"] == "兵部"
+        assert task["targetAgent"] == "bingbu"
     finally:
         kb.TASKS_FILE = original
 

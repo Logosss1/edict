@@ -2,6 +2,10 @@ import { useState } from 'react';
 import { useStore, isEdict, STATE_LABEL } from '../store';
 import { api, type Task, type FlowEntry } from '../api';
 
+function workflowLog(entries: FlowEntry[]): FlowEntry[] {
+  return entries.filter((entry) => entry.kind !== 'scheduler' && entry.from !== '太子调度');
+}
+
 export default function MemorialPanel() {
   const liveStatus = useStore((s) => s.liveStatus);
   const [filter, setFilter] = useState('all');
@@ -14,7 +18,7 @@ export default function MemorialPanel() {
   if (filter !== 'all') mems = mems.filter((t) => t.state === filter);
 
   const exportMemorial = (t: Task) => {
-    const fl = t.flow_log || [];
+    const fl = workflowLog(t.flow_log || []);
     let md = `# 📜 奏折 · ${t.title}\n\n`;
     md += `- **任务编号**: ${t.id}\n`;
     md += `- **状态**: ${t.state}\n`;
@@ -76,7 +80,7 @@ export default function MemorialPanel() {
           <div className="mem-empty">暂无奏折 — 任务完成后自动生成</div>
         ) : (
           mems.map((t) => {
-            const fl = t.flow_log || [];
+            const fl = workflowLog(t.flow_log || []);
             const depts = [...new Set(fl.map((f) => f.from).concat(fl.map((f) => f.to)).filter((x) => x && x !== '皇上'))];
             const firstAt = fl.length ? (fl[0].at || '').substring(0, 16).replace('T', ' ') : '';
             const lastAt = fl.length ? (fl[fl.length - 1].at || '').substring(0, 16).replace('T', ' ') : '';
@@ -126,7 +130,7 @@ function MemorialDetailModal({
   onExport: (t: Task) => void;
   onDelete: () => void;
 }) {
-  const fl = t.flow_log || [];
+  const fl = workflowLog(t.flow_log || []);
   const st = t.state || 'Unknown';
   const stIcon = st === 'Done' ? '✅' : st === 'Cancelled' ? '🚫' : '🔄';
   const depts = [...new Set(fl.map((f) => f.from).concat(fl.map((f) => f.to)).filter((x) => x && x !== '皇上'))];

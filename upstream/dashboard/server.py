@@ -11,7 +11,7 @@ Endpoints:
   GET  /api/model-change-log   → data/model_change_log.json
   GET  /api/last-result        → data/last_model_change_result.json
 """
-import json, pathlib, subprocess, sys, threading, argparse, datetime, logging, re, os, socket, shutil
+import json, pathlib, subprocess, sys, threading, argparse, datetime, logging, re, os, socket, shutil, signal, uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs, quote
 from urllib.request import Request, urlopen
@@ -38,7 +38,21 @@ from court_discuss import (
     delete_attachment as cd_delete_attachment,
 )
 from yushufang import YushufangService
+from yushufang_runtime import prepare_local_dispatch_runtime
 from chat_attachments import AttachmentStore, MAX_FILE_SIZE
+from command_center import (
+    CommandCenterStore,
+    build_plan as build_command_plan,
+    classify_instruction,
+    infer_ministry,
+    make_message as make_command_message,
+    SIX_MINISTRY_AGENTS,
+)
+from execution_workspace import (
+    cancel_run as cancel_workspace_run,
+    snapshot as workspace_snapshot,
+    start_test as start_workspace_test,
+)
 
 log = logging.getLogger('server')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
@@ -237,53 +251,207 @@ def modify_task(task_id, updater):
     return found[0]
 
 
+_ACTIVE_DISPATCHES = {}
+_ACTIVE_DISPATCH_LOCK = threading.RLock()
+
+
+def _terminate_dispatch_process(process):
+    """Stop a real OpenClaw child process, including its local process group."""
+    if process is None:
+        return
+    try:
+        if process.poll() is not None:
+            return
+    except Exception:
+        pass
+    try:
+        if os.name != 'nt' and getattr(process, 'pid', None):
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            except (OSError, ProcessLookupError):
+                process.terminate()
+        else:
+            process.terminate()
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            return
+    try:
+        process.wait(timeout=2)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+
+def _register_dispatch(task_id, attempt_id=''):
+    """Register one dispatch and stop an older dispatch for the same task."""
+    record = {
+        'attemptId': attempt_id,
+        'cancel_event': threading.Event(),
+        'process': None,
+    }
+    previous_process = None
+    with _ACTIVE_DISPATCH_LOCK:
+        previous = _ACTIVE_DISPATCHES.get(task_id)
+        if previous:
+            previous['cancel_event'].set()
+            previous_process = previous.get('process')
+        _ACTIVE_DISPATCHES[task_id] = record
+    if previous_process:
+        _terminate_dispatch_process(previous_process)
+    return record
+
+
+def _unregister_dispatch(task_id, record):
+    with _ACTIVE_DISPATCH_LOCK:
+        if _ACTIVE_DISPATCHES.get(task_id) is record:
+            _ACTIVE_DISPATCHES.pop(task_id, None)
+
+
+def _dispatch_is_current(task_id, record):
+    with _ACTIVE_DISPATCH_LOCK:
+        return _ACTIVE_DISPATCHES.get(task_id) is record and not record['cancel_event'].is_set()
+
+
+def _attach_dispatch_process(task_id, record, process):
+    should_stop = False
+    with _ACTIVE_DISPATCH_LOCK:
+        if _ACTIVE_DISPATCHES.get(task_id) is not record or record['cancel_event'].is_set():
+            should_stop = True
+        else:
+            record['process'] = process
+    if should_stop:
+        _terminate_dispatch_process(process)
+        return False
+    return True
+
+
+def _dispatch_target_is_active(task_id, expected_state, record):
+    if not _dispatch_is_current(task_id, record):
+        return False
+    task = next((item for item in load_tasks() if item.get('id') == task_id), None)
+    if not task or task.get('state') != expected_state:
+        return False
+    attempt_id = record.get('attemptId')
+    if attempt_id and (task.get('_scheduler') or {}).get('dispatchAttemptId') != attempt_id:
+        return False
+    return True
+
+
+def _dispatch_scheduler_update(task_id, record, updater, expected_state=None):
+    """Apply a dispatch result only while this dispatch is still authoritative."""
+    def _guarded(task, sched):
+        if not _dispatch_is_current(task_id, record):
+            return
+        if expected_state and task.get('state') != expected_state:
+            return
+        updater(task, sched)
+    return _update_task_scheduler(task_id, _guarded)
+
+
+def _record_dispatch_failure(task_id, record, expected_state, agent_id, trigger, status, error, label):
+    """Record an actionable failure and block only the stage that failed."""
+    message = str(error or label).strip()[:500]
+
+    def _apply(task, sched):
+        if not _dispatch_is_current(task_id, record):
+            return
+        sched.update({
+            'lastDispatchAt': now_iso(),
+            'lastDispatchStatus': status,
+            'lastDispatchAgent': agent_id,
+            'lastDispatchTrigger': trigger,
+            'lastDispatchError': message,
+        })
+        if task.get('state') == expected_state or (record.get('local_tree') and task.get('state') not in _TERMINAL_STATES | {'Blocked'}):
+            task['_prev_state'] = task.get('state')
+            task['state'] = 'Blocked'
+            task['block'] = message
+            task['now'] = f'⛔ 自动派发失败：{message}'
+            _scheduler_add_flow(task, f'{label}：{message}', to=task.get('org', ''))
+
+    _dispatch_scheduler_update(task_id, record, _apply, expected_state=None if record.get('local_tree') else expected_state)
+
+
 def handle_task_action(task_id, action, reason):
     """Stop/cancel/resume a task from the dashboard."""
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
-    if not task:
+    result = {'error': '', 'task': None, 'state': ''}
+    reason = reason or ('皇上叫停' if action == 'stop' else '皇上取消' if action == 'cancel' else '恢复执行')
+
+    def _apply(task):
+        old_state = task.get('state', '')
+        if action == 'stop' and old_state in _TERMINAL_STATES | {'Blocked'}:
+            result['error'] = f'任务 {task_id} 当前状态为 {old_state}，无法叫停'
+            return
+        if action == 'cancel' and old_state in _TERMINAL_STATES:
+            result['error'] = f'任务 {task_id} 已结束，无法取消'
+            return
+        if action == 'resume' and old_state not in {'Blocked', 'Cancelled'}:
+            result['error'] = f'任务 {task_id} 当前状态为 {old_state}，无需恢复'
+            return
+
+        _ensure_scheduler(task)
+        _scheduler_snapshot(task, f'task-action-before-{action}')
+        if action == 'stop':
+            task['_prev_state'] = task.get('_prev_state') or old_state
+            task['state'] = 'Blocked'
+            task['block'] = reason
+            task['now'] = f'⏸️ 已暂停：{reason}'
+            task['_scheduler']['lastDispatchStatus'] = 'cancelled'
+        elif action == 'cancel':
+            if old_state not in {'Blocked', 'Cancelled'}:
+                task['_prev_state'] = old_state
+            task['state'] = 'Cancelled'
+            task['block'] = reason
+            task['now'] = f'🚫 已取消：{reason}'
+            task['_scheduler']['lastDispatchStatus'] = 'cancelled'
+        else:
+            task['state'] = task.get('_prev_state', 'Doing')
+            task['block'] = '无'
+            task['now'] = '▶️ 已恢复执行'
+            task['_scheduler']['lastDispatchError'] = ''
+
+        task.setdefault('flow_log', []).append({
+            'at': now_iso(),
+            'from': '皇上',
+            'to': task.get('org', ''),
+            'remark': f'{"⏸️ 叫停" if action == "stop" else "🚫 取消" if action == "cancel" else "▶️ 恢复"}：{reason}',
+        })
+        if action == 'resume':
+            _scheduler_mark_progress(task, f'恢复到 {task.get("state", "Doing")}')
+        else:
+            _scheduler_add_flow(task, f'皇上{action}：{reason}')
+        result['task'] = dict(task)
+        result['state'] = task.get('state', '')
+
+    found = modify_task(task_id, _apply)
+    if not found:
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
-
-    old_state = task.get('state', '')
-    _ensure_scheduler(task)
-    _scheduler_snapshot(task, f'task-action-before-{action}')
-
-    if action == 'stop':
-        task['state'] = 'Blocked'
-        task['block'] = reason or '皇上叫停'
-        task['now'] = f'⏸️ 已暂停：{reason}'
-    elif action == 'cancel':
-        task['state'] = 'Cancelled'
-        task['block'] = reason or '皇上取消'
-        task['now'] = f'🚫 已取消：{reason}'
-    elif action == 'resume':
-        # Resume to previous active state or Doing
-        task['state'] = task.get('_prev_state', 'Doing')
-        task['block'] = '无'
-        task['now'] = f'▶️ 已恢复执行'
+    if result['error']:
+        return {'ok': False, 'error': result['error']}
 
     if action in ('stop', 'cancel'):
-        task['_prev_state'] = old_state  # Save for resume
-
-    task.setdefault('flow_log', []).append({
-        'at': now_iso(),
-        'from': '皇上',
-        'to': task.get('org', ''),
-        'remark': f'{"⏸️ 叫停" if action == "stop" else "🚫 取消" if action == "cancel" else "▶️ 恢复"}：{reason}'
-    })
-
-    if action == 'resume':
-        _scheduler_mark_progress(task, f'恢复到 {task.get("state", "Doing")}')
-    else:
-        _scheduler_add_flow(task, f'皇上{action}：{reason or "无"}')
-
-    task['updatedAt'] = now_iso()
-
-    save_tasks(tasks)
-    if action == 'resume' and task.get('state') not in _TERMINAL_STATES:
-        dispatch_for_state(task_id, task, task.get('state'), trigger='resume')
+        with _ACTIVE_DISPATCH_LOCK:
+            active = _ACTIVE_DISPATCHES.get(task_id)
+            if active:
+                active['cancel_event'].set()
+                process = active.get('process')
+            else:
+                process = None
+        if process:
+            _terminate_dispatch_process(process)
+    elif result['state'] not in _TERMINAL_STATES:
+        dispatch_for_state(task_id, result['task'], result['state'], trigger='resume')
     label = {'stop': '已叫停', 'cancel': '已取消', 'resume': '已恢复'}[action]
-    return {'ok': True, 'message': f'{task_id} {label}'}
+    return {
+        'ok': True,
+        'message': f'{task_id} {label}',
+        'state': result['state'],
+        'task': result['task'],
+    }
 
 
 def handle_archive_task(task_id, archived, archive_all_done=False):
@@ -728,7 +896,112 @@ _JUNK_TITLES = {
 }
 
 
-def handle_create_task(title, org='中书省', official='中书令', priority='normal', template_id='', params=None, target_dept=''):
+def _active_formal_tasks(tasks, exclude_id=''):
+    """Return the one-at-a-time formal task lock candidates."""
+    return [
+        task for task in tasks
+        if str(task.get('id') or '').startswith('JJC-')
+        and task.get('id') != exclude_id
+        and not task.get('archived')
+        and task.get('state') not in _TERMINAL_STATES
+    ]
+
+
+def _task_output_dir(project_dir, task_id):
+    if not project_dir:
+        return ''
+    path = pathlib.Path(project_dir).expanduser().resolve() / 'Edict_Output' / task_id
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
+def _small_task_id(tasks):
+    today = datetime.datetime.now().strftime('%Y%m%d')
+    prefix = f'SM-{today}-'
+    ids = [str(task.get('id') or '') for task in tasks if str(task.get('id') or '').startswith(prefix)]
+    nums = [int(item.rsplit('-', 1)[-1]) for item in ids if item.rsplit('-', 1)[-1].isdigit()]
+    return f'{prefix}{(max(nums) + 1) if nums else 1:03d}'
+
+
+def _pick_small_assignment(title):
+    """Choose a fixed six-ministry Agent for a one-step task.
+
+    The semantic department is preferred.  When it is busy, choose an idle
+    configured ministry rather than sending the small task back to Zhongshu.
+    """
+    preferred = build_command_plan(title, 'small').get('targetDept') or '兵部'
+    preferred_agent = SIX_MINISTRY_AGENTS.get(preferred, 'bingbu')
+    ordered = [preferred_agent] + [agent for agent in SIX_MINISTRY_AGENTS.values() if agent != preferred_agent]
+    idle = []
+    for agent_id in ordered:
+        try:
+            _last, _count, busy = _get_agent_session_status(agent_id)
+            if not busy:
+                idle.append(agent_id)
+        except Exception:
+            idle.append(agent_id)
+    agent_id = idle[0] if idle else preferred_agent
+    return next((dept for dept, candidate in SIX_MINISTRY_AGENTS.items() if candidate == agent_id), preferred), agent_id
+
+
+def handle_create_small_task(title, plan=None, command_message_id=''):
+    """Create a non-formal one-step task for an idle fixed ministry Agent."""
+    clean_title = str(title or '').strip()
+    if len(clean_title) < 2:
+        return {'ok': False, 'error': '小任务内容不能太短'}
+    project_dir = os.environ.get('EDICT_PROJECT_DIR', '').strip()
+    if os.environ.get('EDICT_DESKTOP') == '1' and not project_dir:
+        return {'ok': False, 'error': '请先选择工作区项目目录，再执行小任务。', 'code': 'workspace_required'}
+    if project_dir and not pathlib.Path(project_dir).expanduser().is_dir():
+        return {'ok': False, 'error': '当前工作区项目目录不存在，请重新选择。', 'code': 'workspace_invalid'}
+    tasks = load_tasks()
+    task_id = _small_task_id(tasks)
+    department, agent_id = _pick_small_assignment(clean_title)
+    output_dir = ''
+    try:
+        output_dir = _task_output_dir(project_dir, task_id)
+    except OSError as exc:
+        return {'ok': False, 'error': f'无法准备工作区输出目录：{exc}', 'code': 'workspace_write_failed'}
+    created_at = now_iso()
+    new_task = {
+        'id': task_id,
+        'title': clean_title[:200],
+        'official': department,
+        'org': department,
+        'state': 'Doing',
+        'now': f'太子分拣完成，已交给{department}（{agent_id}）执行',
+        'eta': '-',
+        'block': '无',
+        'output': output_dir,
+        'ac': '',
+        'priority': 'normal',
+        'workflowMode': 'small',
+        'dispatchKind': 'small',
+        'commandMessageId': command_message_id,
+        'targetDept': department,
+        'targetAgent': agent_id,
+        'dispatchMessage': clean_title[:12_000],
+        'flow_log': [
+            {'at': created_at, 'from': '皇上', 'to': '太子', 'remark': f'总控台下达小任务：{clean_title[:200]}'},
+            {'at': created_at, 'from': '太子', 'to': department, 'remark': f'分拣完成，交给固定 Agent {agent_id}'},
+        ],
+        'updatedAt': created_at,
+    }
+    if output_dir:
+        new_task['outputDir'] = output_dir
+        new_task['projectPath'] = str(pathlib.Path(project_dir).expanduser().resolve())
+    if isinstance(plan, dict):
+        new_task['plan'] = {key: plan.get(key) for key in ('mode', 'modeLabel', 'reason', 'suggestedAgents', 'targetDept', 'nextStep') if key in plan}
+    _ensure_scheduler(new_task)
+    _scheduler_snapshot(new_task, 'create-small-task')
+    _scheduler_mark_progress(new_task, '小任务创建并完成分拣')
+    tasks.insert(0, new_task)
+    save_tasks(tasks)
+    dispatch_for_state(task_id, new_task, 'Doing', trigger='command-center-small')
+    return {'ok': True, 'taskId': task_id, 'message': f'小任务已交给{department}（{agent_id}）执行', 'task': new_task}
+
+
+def handle_create_task(title, org='中书省', official='中书令', priority='normal', template_id='', params=None, target_dept='', workflow_mode='standard', approval_mode='full', plan=None, command_message_id=''):
     """从看板创建新任务（圣旨模板下旨）。"""
     if not title or not title.strip():
         return {'ok': False, 'error': '任务标题不能为空'}
@@ -748,6 +1021,22 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
     # 生成 task id: JJC-YYYYMMDD-NNN
     today = datetime.datetime.now().strftime('%Y%m%d')
     tasks = load_tasks()
+    workflow_mode = str(workflow_mode or 'standard').strip().lower()
+    if workflow_mode not in {'standard', 'complex'}:
+        workflow_mode = 'standard'
+    # Every formal task gets a deterministic six-ministry destination before
+    # it enters the chain.  Zhongshu and Shangshu can still refine the plan,
+    # but an empty execution assignment is never allowed to reach Doing.
+    target_dept = _normalize_six_ministry(target_dept) or infer_ministry(title)
+    active_formal = _active_formal_tasks(tasks)
+    if active_formal:
+        current = active_formal[0]
+        return {
+            'ok': False,
+            'code': 'formal_task_active',
+            'activeTaskId': current.get('id', ''),
+            'error': f'当前已有正式任务 {current.get("id", "")} 正在执行（{current.get("state", "") or "未知阶段"}）。完成、取消或归档后才能开始下一场正式任务；小任务仍可使用空闲六部 Agent。',
+        }
     today_ids = [t['id'] for t in tasks if t.get('id', '').startswith(f'JJC-{today}-')]
     seq = 1
     if today_ids:
@@ -771,6 +1060,11 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
         'priority': priority,
         'templateId': template_id,
         'templateParams': params or {},
+        'workflowMode': workflow_mode,
+        'approvalMode': str(approval_mode or 'full'),
+        'commandMessageId': command_message_id,
+        'targetDept': target_dept,
+        'targetAgent': 'taizi',
         'flow_log': [{
             'at': now_iso(),
             'from': '皇上',
@@ -779,8 +1073,21 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
         }],
         'updatedAt': now_iso(),
     }
+    project_dir = os.environ.get('EDICT_PROJECT_DIR', '').strip()
+    if os.environ.get('EDICT_DESKTOP') == '1' and not project_dir:
+        return {'ok': False, 'code': 'workspace_required', 'error': '请先选择工作区项目目录，再下达正式任务。'}
+    if project_dir and not pathlib.Path(project_dir).expanduser().is_dir():
+        return {'ok': False, 'code': 'workspace_invalid', 'error': '当前工作区项目目录不存在，请重新选择。'}
+    if project_dir:
+        new_task['projectPath'] = str(pathlib.Path(project_dir).expanduser().resolve())
+        try:
+            new_task['outputDir'] = _task_output_dir(project_dir, task_id)
+        except OSError as exc:
+            return {'ok': False, 'code': 'workspace_write_failed', 'error': f'无法准备工作区输出目录：{exc}'}
     if target_dept:
         new_task['targetDept'] = target_dept
+    if isinstance(plan, dict):
+        new_task['plan'] = {key: plan.get(key) for key in ('mode', 'modeLabel', 'reason', 'suggestedAgents', 'targetDept', 'nextStep') if key in plan}
 
     _ensure_scheduler(new_task)
     _scheduler_snapshot(new_task, 'create-task-initial')
@@ -793,6 +1100,187 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
     dispatch_for_state(task_id, new_task, 'Taizi', trigger='imperial-edict')
 
     return {'ok': True, 'taskId': task_id, 'message': f'旨意 {task_id} 已下达，正在派发给太子'}
+
+
+def _command_center_store():
+    return CommandCenterStore(DATA)
+
+
+def get_command_center():
+    return {'ok': True, **_command_center_store().snapshot()}
+
+
+def _command_center_reply(store, text, plan, **extra):
+    message = make_command_message('taizi', text, plan, **extra)
+    store.append(message)
+    return message
+
+
+def _execute_command_center_plan(store, text, plan, permission_mode='full', command_message_id=''):
+    mode = plan.get('mode')
+    if mode == 'chat':
+        return _command_center_reply(
+            store,
+            '太子分拣：这是实时问询，不建立正式任务。若要询问某个 Agent 的实时进度，请进入御书房；御书房会读取该 Agent 当前工作会话，不会把问询误建成旨意。',
+            plan,
+            action='open-yushufang',
+        )
+    if mode == 'small':
+        result = handle_create_small_task(text, plan, command_message_id)
+    else:
+        result = handle_create_task(
+            text,
+            org='中书省',
+            official='中书令',
+            priority='normal',
+            target_dept=plan.get('targetDept', ''),
+            workflow_mode=mode,
+            approval_mode=permission_mode,
+            plan=plan,
+            command_message_id=command_message_id,
+        )
+    if result.get('ok'):
+        task_id = result.get('taskId', '')
+        _command_center_reply(
+            store,
+            f'太子分拣完成：{plan.get("modeLabel", mode)}已建立，任务编号 {task_id}。{plan.get("nextStep", "")}',
+            plan,
+            taskId=task_id,
+            action='task-created',
+        )
+    else:
+        _command_center_reply(
+            store,
+            f'太子分拣未能继续：{result.get("error", "任务建立失败")}',
+            plan,
+            action='blocked',
+            errorCode=result.get('code', ''),
+        )
+    return result
+
+
+def handle_command_center_message(body):
+    """Classify a desktop instruction, then route it to the existing workflow."""
+    text = str((body or {}).get('text') or '').strip()
+    if not text:
+        return {'ok': False, 'error': '请输入要交给太子的内容'}
+    if len(text) > 12_000:
+        return {'ok': False, 'error': '单条指令不能超过 12000 个字符'}
+    store = _command_center_store()
+    requested_mode = str((body or {}).get('mode') or '').strip().lower()
+    permission_mode = str((body or {}).get('permissionMode') or 'full').strip().lower()
+    if permission_mode not in {'ask', 'auto', 'full'}:
+        permission_mode = 'full'
+    plan = build_command_plan(text, requested_mode)
+    command_message_id = uuid.uuid4().hex
+    store.append(make_command_message('emperor', text, plan, id=command_message_id, permissionMode=permission_mode))
+
+    if plan.get('mode') == 'complex' and permission_mode == 'ask' and not (body or {}).get('approved'):
+        pending = {
+            'id': command_message_id,
+            'text': text,
+            'plan': plan,
+            'permissionMode': permission_mode,
+            'createdAt': now_iso(),
+        }
+        store.set_pending(pending)
+        _command_center_reply(
+            store,
+            '太子分拣完成：这是复杂任务。请先确认计划、工作区范围和权限，再进入三省六部正式流程。',
+            plan,
+            action='approval-required',
+        )
+        return {'ok': True, 'requiresApproval': True, 'plan': plan, 'commandMessageId': command_message_id, **store.snapshot()}
+
+    store.set_pending(None)
+    result = _execute_command_center_plan(store, text, plan, permission_mode, command_message_id)
+    return {**result, 'plan': plan, 'commandMessageId': command_message_id, **store.snapshot()}
+
+
+def handle_command_center_approve():
+    store = _command_center_store()
+    pending = store.snapshot().get('pendingPlan')
+    if not isinstance(pending, dict) or not pending.get('text') or not isinstance(pending.get('plan'), dict):
+        return {'ok': False, 'error': '当前没有待确认的复杂任务'}
+    store.set_pending(None)
+    result = _execute_command_center_plan(
+        store,
+        pending['text'],
+        pending['plan'],
+        str(pending.get('permissionMode') or 'full'),
+        str(pending.get('id') or ''),
+    )
+    return {**result, 'plan': pending['plan'], 'commandMessageId': pending.get('id', ''), **store.snapshot()}
+
+
+def get_task_workspace(task_id):
+    clean_id = str(task_id or '').strip()
+    if not clean_id or not _SAFE_NAME_RE.fullmatch(clean_id):
+        return {'ok': False, 'error': 'taskId 无效'}
+    task = next((item for item in load_tasks() if item.get('id') == clean_id), None)
+    if not task:
+        return {'ok': False, 'error': f'任务 {clean_id} 不存在'}
+    execution_department, execution_agent = _resolve_execution_assignment(task)
+    current_agent = _STATE_AGENT_MAP.get(task.get('state'))
+    if (
+        task.get('state') in {'Doing', 'Next'}
+        or task.get('targetDept')
+        or task.get('org') in {'六部', '执行中'}
+        or _normalize_six_ministry(task.get('targetDept') or task.get('org'))
+    ):
+        current_agent = execution_agent or task.get('targetAgent', '')
+    current_department = task.get('targetDept') or execution_department
+    project = str(task.get('projectPath') or os.environ.get('EDICT_PROJECT_DIR') or '').strip()
+    if not project:
+        return {
+            'ok': True,
+            'taskId': clean_id,
+            'task': {
+                'id': clean_id, 'title': task.get('title', ''), 'state': task.get('state', ''),
+                'org': task.get('org', ''), 'targetDept': current_department,
+                'targetAgent': current_agent or task.get('targetAgent', ''),
+            },
+            'projectPath': '', 'outputDir': '', 'artifacts': [], 'testCommands': [], 'latestTest': None,
+            'git': {'available': False, 'branch': '', 'changedFiles': [], 'summary': '尚未选择项目目录'},
+            'permission': {'mode': 'full', 'scope': '等待选择工作区项目目录'},
+            'activity': get_task_activity(clean_id).get('activity', []),
+        }
+    try:
+        data = workspace_snapshot(project, clean_id, DATA)
+    except (ValueError, PermissionError, OSError) as exc:
+        return {'ok': False, 'taskId': clean_id, 'error': str(exc)}
+    data.update({
+        'taskId': clean_id,
+        'task': {
+            'id': clean_id, 'title': task.get('title', ''), 'state': task.get('state', ''),
+            'org': task.get('org', ''), 'now': task.get('now', ''), 'targetDept': current_department,
+            'targetAgent': current_agent or task.get('targetAgent', ''), 'block': task.get('block', ''),
+        },
+        'agentId': current_agent or task.get('targetAgent', ''),
+        'permission': {
+            'mode': task.get('permissionMode', 'full'),
+            'scope': '当前任务可在选定项目目录内读写、运行项目命令和测试；工作区外及系统级敏感操作不自动放行',
+        },
+        'activity': get_task_activity(clean_id).get('activity', []),
+    })
+    return data
+
+
+def start_task_workspace_test(task_id, command_id=''):
+    clean_id = str(task_id or '').strip()
+    task = next((item for item in load_tasks() if item.get('id') == clean_id), None)
+    if not task:
+        return {'ok': False, 'error': f'任务 {clean_id} 不存在'}
+    project = str(task.get('projectPath') or os.environ.get('EDICT_PROJECT_DIR') or '').strip()
+    if not project:
+        return {'ok': False, 'error': '任务尚未绑定工作区项目目录'}
+    try:
+        commands = workspace_snapshot(project, clean_id, DATA).get('testCommands') or []
+        if not command_id:
+            command_id = commands[0].get('id', '') if commands else ''
+        return start_workspace_test(project, clean_id, DATA, command_id)
+    except (ValueError, PermissionError, OSError) as exc:
+        return {'ok': False, 'error': str(exc)}
 
 
 def _todo_progress(task):
@@ -905,6 +1393,78 @@ def _check_gateway_probe():
         except Exception:
             continue
     return False
+
+
+def _dispatch_channel_config():
+    """Return the verified external dispatch channel, or an empty string.
+
+    ``dispatchChannel`` is retained as the user's selected channel, while
+    ``dispatchChannelEnabled`` is the explicit opt-in gate. Legacy configs
+    without the gate therefore remain local-only instead of silently entering
+    the user's Gateway route.
+    """
+    config = read_json(DATA / 'agent_config.json', {})
+    if not isinstance(config, dict):
+        return ''
+    channel = str(config.get('dispatchChannel') or '').strip().lower()
+    return channel if channel and config.get('dispatchChannelEnabled') is True else ''
+
+
+def _workspace_access_preflight():
+    """Check the selected project without touching any user files."""
+    project = str(os.environ.get('EDICT_PROJECT_DIR') or '').strip()
+    if not project:
+        return False, '尚未选择项目目录，请先完成工作区设置。'
+    path = pathlib.Path(project).expanduser()
+    if not path.is_dir():
+        return False, '当前项目目录不存在或不是文件夹。'
+    if not all(os.access(path, mode) for mode in (os.R_OK, os.W_OK, os.X_OK)):
+        return False, '当前项目目录缺少读、写或进入权限；请在 macOS 系统设置中授权。'
+    probe = path / f'.edict-access-probe-{uuid.uuid4().hex}.tmp'
+    try:
+        probe.write_text('edict workspace access probe\n', encoding='utf-8')
+        probe.unlink(missing_ok=True)
+        return True, '项目目录可读、可写，临时文件测试通过。'
+    except PermissionError:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False, '应用无法在项目目录创建临时文件；请检查 macOS 文件访问权限。'
+    except OSError as exc:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False, f'项目目录权限检查失败：{exc.strerror or exc}。'
+
+
+def _secret_configured(value):
+    if isinstance(value, dict):
+        if value.get('source') == 'env':
+            return bool(os.environ.get(str(value.get('id') or '').strip()))
+        return bool(value)
+    return bool(str(value or '').strip())
+
+
+def _external_dispatch_preflight(channel):
+    """Validate the effective desktop Gateway route before dispatching."""
+    config = read_json(OCLAW_HOME / 'openclaw.json', {})
+    if not isinstance(config, dict):
+        return False, '桌面版 OpenClaw 配置不可读取。'
+    channels = config.get('channels') if isinstance(config.get('channels'), dict) else {}
+    channel_config = channels.get(channel)
+    if not isinstance(channel_config, dict) or channel_config.get('enabled') is False:
+        return False, f'{channel} 尚未在桌面运行环境中配置；请在设置中填写渠道信息并完成验证。'
+
+    gateway = config.get('gateway') if isinstance(config.get('gateway'), dict) else {}
+    auth = gateway.get('auth') if isinstance(gateway.get('auth'), dict) else {}
+    auth_mode = str(auth.get('mode') or '').strip().lower()
+    has_auth = auth_mode == 'none' or _secret_configured(auth.get('token')) or _secret_configured(auth.get('password'))
+    has_auth = has_auth or bool(os.environ.get('OPENCLAW_GATEWAY_TOKEN') or os.environ.get('OPENCLAW_GATEWAY_PASSWORD'))
+    if not has_auth:
+        return False, '桌面版 Gateway 尚未完成认证配置；请先配置 token/password 并验证连接。'
+    return True, '外部派发渠道和 Gateway 配置已就绪。'
 
 
 def _get_agent_session_status(agent_id):
@@ -1037,13 +1597,30 @@ def get_agents_status():
 
 
 def get_readiness():
-    """Return a redacted, actionable first-run readiness contract.
+    """Return a redacted, actionable execution-preflight contract.
 
-    This deliberately checks the effective OpenClaw config used by the
-    dashboard, not only the settings metadata. A provider can be saved in the
-    desktop store while its model is still unbound or its secret is absent
-    from the child environment; those states must remain visibly unready.
+    The dashboard, 御书房 and 朝堂议政 all share the same local runtime and
+    provider configuration.  Keep their readiness decision in one place so a
+    green status on one page cannot disagree with a blocked action on another.
+    A failed warning check is reported to the user but does not prevent the
+    core workflow; a failed blocker does.
     """
+
+    def check(item_id, label, ready, detail, scope, action_type='settings', action_label='打开设置', target=None, blocking=True):
+        action = {'type': action_type, 'label': action_label}
+        if target:
+            action['target'] = target
+        return {
+            'id': item_id,
+            'label': label,
+            'ready': bool(ready),
+            'detail': str(detail or ''),
+            'scope': scope,
+            'blocking': bool(blocking),
+            'severity': 'ready' if ready else ('blocker' if blocking else 'warning'),
+            'action': action,
+        }
+
     config = read_json(OCLAW_HOME / 'openclaw.json', {})
     if not isinstance(config, dict):
         config = {}
@@ -1056,19 +1633,20 @@ def get_readiness():
 
     configured_agents = [item for item in agents if isinstance(item, dict) and str(item.get('id') or '').strip()]
     bound = []
-    secret_ready = False
+    provider_secret_status = {}
     for provider_id, provider in (providers.items() if isinstance(providers, dict) else []):
         if not isinstance(provider, dict):
             continue
         api_key = provider.get('apiKey')
         if isinstance(api_key, dict):
             env_id = str(api_key.get('id') or '').strip()
-            if env_id and os.environ.get(env_id):
-                secret_ready = True
+            provider_secret_status[provider_id] = bool(env_id and os.environ.get(env_id))
         elif isinstance(api_key, str) and api_key.strip():
             # Legacy plaintext is not considered ready; the settings layer
             # must migrate it into secure storage before use.
-            secret_ready = False
+            provider_secret_status[provider_id] = False
+        else:
+            provider_secret_status[provider_id] = False
         for model in provider.get('models', []) if isinstance(provider.get('models'), list) else []:
             if isinstance(model, dict) and str(model.get('id') or '').strip():
                 bound.append(f'{provider_id}/{model["id"]}')
@@ -1082,17 +1660,211 @@ def get_readiness():
         if isinstance(model, str) and model.strip():
             agent_models.append(model.strip())
     agent_binding_ready = bool(agent_models) and all(model in bound for model in agent_models)
+    required_provider_ids = {
+        model.split('/', 1)[0]
+        for model in agent_models
+        if '/' in model
+    }
+    secret_ready = (
+        all(provider_secret_status.get(provider_id, False) for provider_id in required_provider_ids)
+        if required_provider_ids
+        else any(provider_secret_status.values())
+    )
     runtime = get_yushufang_service().check_runtime()
-    checks = [
-        {'id': 'runtime', 'label': '运行依赖', 'ready': bool(runtime.get('ok')), 'detail': 'OpenClaw 与 Node.js 已就绪' if runtime.get('ok') else '；'.join(runtime.get('errors') or [])},
-        {'id': 'provider', 'label': '供应商', 'ready': bool(providers), 'detail': f'{len(providers)} 个供应商已进入运行配置' if providers else '还没有供应商配置'},
-        {'id': 'secret', 'label': '密钥', 'ready': secret_ready, 'detail': '密钥已注入当前运行环境' if secret_ready else '请在设置中保存供应商密钥'},
-        {'id': 'model', 'label': '模型目录', 'ready': models_ready, 'detail': f'{len(bound)} 个模型可用' if models_ready else '供应商尚未配置模型'},
-        {'id': 'agent', 'label': 'Agent 绑定', 'ready': bool(configured_agents) and agent_binding_ready, 'detail': f'{len(configured_agents)} 个 Agent 已绑定有效模型' if configured_agents and agent_binding_ready else '请为至少一个 Agent 应用有效模型'},
+    checks = []
+    # The desktop launcher always selects a project before opening the main
+    # workbench. Keep the legacy HTTP test harness independent of this check.
+    if os.environ.get('EDICT_DESKTOP') == '1':
+        workspace_ready, workspace_detail = _workspace_access_preflight()
+        checks.append(check(
+            'workspace', '工作区权限', workspace_ready, workspace_detail, 'workspace',
+            action_type='workspace-permission', action_label='打开工作区权限设置',
+        ))
+
+    dispatch_channel = _dispatch_channel_config()
+    if dispatch_channel:
+        dispatch_ready, dispatch_detail = _external_dispatch_preflight(dispatch_channel)
+        checks.append(check(
+            'dispatch', '外部派发', dispatch_ready, dispatch_detail, 'dispatch',
+            action_label='打开派发渠道配置', target='models',
+        ))
+    else:
+        checks.append(check(
+            'dispatch', '派发渠道', True, '外部派发已关闭，将使用桌面内置本地派发。', 'dispatch',
+            action_type='none', action_label='无需配置', blocking=False,
+        ))
+
+    checks.extend([
+        check(
+            'runtime', '运行依赖', bool(runtime.get('ok')),
+            'OpenClaw 与 Node.js 已就绪' if runtime.get('ok') else '；'.join(runtime.get('errors') or []),
+            'runtime', target='dependencies', action_label='打开运行依赖设置',
+        ),
+        check(
+            'provider', '供应商', bool(providers),
+            f'{len(providers)} 个供应商已进入运行配置' if providers else '还没有供应商配置',
+            'provider', target='providers', action_label='打开供应商设置',
+        ),
+        check(
+            'secret', '密钥', secret_ready,
+            '密钥已注入当前运行环境' if secret_ready else '请在设置中保存供应商密钥',
+            'provider', target='providers', action_label='打开供应商设置',
+        ),
+        check(
+            'model', '模型目录', models_ready,
+            f'{len(bound)} 个模型可用' if models_ready else '供应商尚未配置模型',
+            'provider', target='models', action_label='打开模型设置',
+        ),
+        check(
+            'agent', 'Agent 绑定', bool(configured_agents) and agent_binding_ready,
+            f'{len(configured_agents)} 个 Agent 已绑定有效模型' if configured_agents and agent_binding_ready else '请为至少一个 Agent 应用有效模型',
+            'agent', target='agents', action_label='打开 Agent 设置',
+        ),
+    ])
+
+    # 六部不是一个可以兜底的虚拟 Agent，而是六个固定执行 Agent。
+    # 只要其中一个没有注册或没有绑定可用模型，执行保障就必须提前拦截，
+    # 避免任务进入 Doing 后才浪费一次错误的模型调用。
+    configured_by_id = {
+        str(item.get('id') or '').strip(): item
+        for item in configured_agents
+    }
+    missing_ministries = []
+    invalid_ministry_models = []
+    for ministry, ministry_agent in _SIX_MINISTRY_AGENT_MAP.items():
+        configured = configured_by_id.get(ministry_agent)
+        if not configured:
+            missing_ministries.append(f'{ministry}（{ministry_agent}）')
+            continue
+        model = configured.get('model') or default_model
+        if isinstance(model, dict):
+            model = model.get('primary', '')
+        if not isinstance(model, str) or not model.strip() or model.strip() not in bound:
+            invalid_ministry_models.append(f'{ministry}（{ministry_agent}）')
+    six_ready = not missing_ministries and not invalid_ministry_models
+    six_detail = '礼部、户部、兵部、刑部、工部、吏部 Agent 均已绑定有效模型' if six_ready else (
+        '缺少 Agent：' + '、'.join(missing_ministries[:6])
+        if missing_ministries else
+        '模型未就绪：' + '、'.join(invalid_ministry_models[:6])
+    )
+    checks.append(check(
+        'six_ministries', '六部 Agent', six_ready, six_detail, 'agent',
+        target='agents', action_label='打开六部 Agent 设置',
+    ))
+
+    # Skills and MCP are useful capabilities, but neither should make a basic
+    # local task impossible. Detect malformed references and surface them as
+    # warnings so the user can fix the exact area without losing the core
+    # 皇上 → 太子 → 三省六部 workflow.
+    skill_issues = []
+    for agent in configured_agents:
+        configured_skills = agent.get('skills')
+        if not isinstance(configured_skills, list):
+            continue
+        workspace = pathlib.Path(agent.get('workspace') or defaults.get('workspace') or OCLAW_HOME / f'workspace-{agent.get("id")}').expanduser()
+        for skill_name in configured_skills:
+            if not isinstance(skill_name, str) or not skill_name.strip():
+                continue
+            skill_path = workspace / 'skills' / skill_name.strip() / 'SKILL.md'
+            if not skill_path.is_file():
+                skill_issues.append(f'{agent.get("id")}/{skill_name.strip()}')
+    mcp_config = config.get('mcp') if isinstance(config.get('mcp'), dict) else {}
+    mcp_servers = mcp_config.get('servers') if isinstance(mcp_config.get('servers'), dict) else {}
+    mcp_issues = [
+        str(name) for name, item in mcp_servers.items()
+        if isinstance(item, dict)
+        and item.get('enabled', True) is not False
+        and not item.get('command') and not item.get('url')
     ]
-    ready = all(item['ready'] for item in checks)
-    next_step = '可以开始召见 Agent 或创建任务。' if ready else next((item['detail'] for item in checks if not item['ready']), '请打开设置完成配置。')
-    return {'ok': True, 'ready': ready, 'checks': checks, 'next': next_step, 'checkedAt': now_iso()}
+    checks.append(check(
+        'skills', 'Skills', not skill_issues,
+        '所有已声明 Skills 均可读取' if not skill_issues else f'以下 Skills 文件不存在：{", ".join(skill_issues[:5])}',
+        'tools', target='skills', action_label='打开 Skills 设置', blocking=False,
+    ))
+    checks.append(check(
+        'mcp', 'MCP', not mcp_issues,
+        'MCP 配置结构可读取' if not mcp_issues else f'以下 MCP 缺少 command 或 url：{", ".join(mcp_issues[:5])}',
+        'tools', target='mcp', action_label='打开 MCP 设置', blocking=False,
+    ))
+
+    blockers = sum(1 for item in checks if not item['ready'] and item.get('blocking', True))
+    warnings = sum(1 for item in checks if not item['ready'] and not item.get('blocking', True))
+    ready_count = sum(1 for item in checks if item['ready'])
+    ready = blockers == 0
+    check_by_id = {item['id']: item for item in checks}
+    core_ids = ['runtime', 'provider', 'secret', 'model', 'agent', 'six_ministries']
+    if 'workspace' in check_by_id:
+        core_ids.insert(0, 'workspace')
+    core_ready = all(check_by_id[item_id]['ready'] for item_id in core_ids if item_id in check_by_id)
+    dispatch_ready = check_by_id['dispatch']['ready']
+    routes = {
+        'board': {
+            'ready': core_ready and dispatch_ready,
+            'enabled': True,
+            'mode': 'external' if dispatch_channel else 'local',
+            'detail': '旨意看板可以进入太子分拣和后续三省六部流程。' if core_ready and dispatch_ready else '旨意看板会在执行前被运行保障拦截。',
+        },
+        'yushufang': {
+            'ready': core_ready,
+            'enabled': True,
+            'mode': 'local',
+            'detail': '御书房可以读取 Agent 当前工作会话并实时问询。' if core_ready else '御书房需要先修复本地运行保障。',
+        },
+        'court': {
+            'ready': core_ready,
+            'enabled': True,
+            'mode': 'local',
+            'detail': '朝堂议政可以启动并使用当前 Agent 配置。' if core_ready else '朝堂议政需要先修复本地运行保障。',
+        },
+        'externalDispatch': {
+            'ready': dispatch_ready,
+            'enabled': bool(dispatch_channel),
+            'mode': 'external' if dispatch_channel else 'disabled',
+            'detail': '外部派发已验证。' if dispatch_channel and dispatch_ready else ('外部派发已关闭，使用桌面内置本地派发。' if not dispatch_channel else '外部派发尚未通过渠道与 Gateway 验证。'),
+        },
+    }
+    next_step = '可以开始召见 Agent 或创建任务。' if ready else next((item['detail'] for item in checks if not item['ready'] and item.get('blocking', True)), '请打开执行保障查看提示。')
+    return {
+        'ok': True,
+        'ready': ready,
+        'checks': checks,
+        'routes': routes,
+        'summary': {'total': len(checks), 'ready': ready_count, 'blockers': blockers, 'warnings': warnings},
+        'next': next_step,
+        'checkedAt': now_iso(),
+    }
+
+
+def repair_readiness(action):
+    """Run only app-owned, allowlisted preflight repairs.
+
+    macOS privacy permissions and provider/channel credentials cannot be
+    granted silently by an app.  This endpoint therefore repairs the safe
+    synchronization step only; the UI sends the user to the exact settings
+    surface for anything that needs explicit approval.
+    """
+    if action != 'sync_runtime':
+        return {'ok': False, 'error': '不支持的体检修复操作'}
+    script = SCRIPTS / 'sync_agent_config.py'
+    if not script.is_file():
+        return {'ok': False, 'error': '找不到 Agent 配置同步脚本，请重新检查运行依赖。'}
+    try:
+        result = subprocess.run(
+            [python_bin(), str(script)],
+            cwd=str(BASE.parent),
+            env=runtime_environment(),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return {'ok': False, 'error': 'Agent 配置同步超时，请稍后重试。'}
+    except OSError:
+        return {'ok': False, 'error': '无法启动 Agent 配置同步，请打开运行依赖设置。'}
+    if result.returncode != 0:
+        log.warning('执行保障同步失败，退出码=%s', result.returncode)
+        return {'ok': False, 'error': 'Agent 配置同步失败，请打开设置查看运行依赖。'}
+    return {'ok': True, 'message': '应用内运行配置已同步，请重新检测。', 'readiness': get_readiness()}
 
 
 def wake_agent(agent_id, message=''):
@@ -1149,13 +1921,85 @@ _STATE_AGENT_MAP = {
     'Next': None,          # 待执行，从 org 推断
     'Pending': 'zhongshu', # 待处理，默认中书省
 }
+_SIX_MINISTRY_AGENT_MAP = {
+    '礼部': 'libu',
+    '户部': 'hubu',
+    '兵部': 'bingbu',
+    '刑部': 'xingbu',
+    '工部': 'gongbu',
+    '吏部': 'libu_hr',
+}
+_SIX_MINISTRY_AGENT_TO_DEPT = {
+    agent_id: department for department, agent_id in _SIX_MINISTRY_AGENT_MAP.items()
+}
+_SIX_MINISTRY_ALIASES = {
+    '礼部尚书': '礼部', '户部尚书': '户部', '兵部尚书': '兵部',
+    '刑部尚书': '刑部', '工部尚书': '工部', '吏部尚书': '吏部',
+    'libu': '礼部', 'hubu': '户部', 'bingbu': '兵部',
+    'xingbu': '刑部', 'gongbu': '工部', 'libu_hr': '吏部',
+}
+
+
+def _normalize_six_ministry(value):
+    """Normalize a six-ministry label or fixed Agent id to its department."""
+    raw = str(value or '').strip()
+    if raw in _SIX_MINISTRY_AGENT_MAP:
+        return raw
+    if raw in _SIX_MINISTRY_ALIASES:
+        return _SIX_MINISTRY_ALIASES[raw]
+    return _SIX_MINISTRY_ALIASES.get(raw.lower(), '')
+
+
+def _resolve_execution_assignment(task):
+    """Return (department, fixed_agent_id) for a task's execution stage.
+
+    Prefer an explicit targetDept or six-ministry org.  If an older task did
+    not persist either field, derive one deterministic primary department
+    from its title.  Taizi, Zhongshu, Shangshu and the generic ``六部`` label
+    are never treated as execution Agents.
+    """
+    if not isinstance(task, dict):
+        return '', ''
+    for candidate in (task.get('targetDept'), task.get('org')):
+        department = _normalize_six_ministry(candidate)
+        if department:
+            return department, _SIX_MINISTRY_AGENT_MAP[department]
+    inferred = infer_ministry(task.get('title', ''))
+    if inferred in _SIX_MINISTRY_AGENT_MAP:
+        return inferred, _SIX_MINISTRY_AGENT_MAP[inferred]
+    return '', ''
+
+
 _ORG_AGENT_MAP = {
-    '礼部': 'libu', '户部': 'hubu', '兵部': 'bingbu',
-    '刑部': 'xingbu', '工部': 'gongbu', '吏部': 'libu_hr',
+    **_SIX_MINISTRY_AGENT_MAP,
     '中书省': 'zhongshu', '门下省': 'menxia', '尚书省': 'shangshu',
 }
 
 _TERMINAL_STATES = {'Done', 'Cancelled'}
+
+_DISPATCH_STATUS_LABELS = {
+    'idle': '未开始派发',
+    'queued': '已排队',
+    'dispatching': '派发中',
+    'waiting_gateway': '等待 Gateway',
+    'running': 'Agent 处理中',
+    'success': '已派发',
+    'retrying': '重试中',
+    'disabled': '自动派发已关闭',
+    'cancelled': '已停止',
+    'awaiting_assignment': '等待指定六部',
+    'not_needed': '无需派发',
+    'gateway-offline': 'Gateway 不可用',
+    'openclaw-missing': '运行时缺失',
+    'timeout': '派发超时',
+    'failed': '派发失败',
+    'error': '派发异常',
+    'completed_no_transition': 'Agent 已返回，等待阶段更新',
+}
+
+_DISPATCH_RECOVERY_STATUSES = {
+    'idle', 'queued', 'dispatching', 'waiting_gateway', 'running', 'retrying', 'disabled',
+}
 
 
 def _parse_iso(ts):
@@ -1184,6 +2028,24 @@ def _ensure_scheduler(task):
         sched['stallSince'] = None
     if 'lastDispatchStatus' not in sched:
         sched['lastDispatchStatus'] = 'idle'
+    if 'lastDispatchMode' not in sched:
+        sched['lastDispatchMode'] = ''
+    if 'lastDispatchAgent' not in sched:
+        sched['lastDispatchAgent'] = ''
+    if 'lastDispatchTrigger' not in sched:
+        sched['lastDispatchTrigger'] = ''
+    if 'lastDispatchError' not in sched:
+        sched['lastDispatchError'] = ''
+    if 'dispatchAttemptId' not in sched:
+        sched['dispatchAttemptId'] = ''
+    if 'dispatchQueuedAt' not in sched:
+        sched['dispatchQueuedAt'] = ''
+    if 'dispatchStartedAt' not in sched:
+        sched['dispatchStartedAt'] = ''
+    if 'lastEvent' not in sched:
+        sched['lastEvent'] = task.get('now') or '任务已创建'
+    if 'lastEventAt' not in sched:
+        sched['lastEventAt'] = task.get('updatedAt') or now_iso()
     if 'snapshot' not in sched:
         sched['snapshot'] = {
             'state': task.get('state', ''),
@@ -1195,13 +2057,24 @@ def _ensure_scheduler(task):
     return sched
 
 
+def _scheduler_set_event(task, message, status=None, event_at=None):
+    sched = task.setdefault('_scheduler', {})
+    if status:
+        sched['lastDispatchStatus'] = status
+    sched['lastEvent'] = str(message or '').strip()[:500]
+    sched['lastEventAt'] = event_at or now_iso()
+
+
 def _scheduler_add_flow(task, remark, to=''):
+    event_at = now_iso()
     task.setdefault('flow_log', []).append({
-        'at': now_iso(),
+        'at': event_at,
+        'kind': 'scheduler',
         'from': '太子调度',
         'to': to or task.get('org', ''),
         'remark': f'🧭 {remark}'
     })
+    _scheduler_set_event(task, remark, event_at=event_at)
 
 
 def _scheduler_snapshot(task, note=''):
@@ -1250,6 +2123,69 @@ def _update_task_scheduler(task_id, updater):
     return modify_task(task_id, _apply)
 
 
+def _scheduler_public_status(task, sched):
+    """Return user-facing dispatch status without exposing provider secrets."""
+    status = str(sched.get('lastDispatchStatus') or 'idle')
+    label = _DISPATCH_STATUS_LABELS.get(status, status)
+    error = str(sched.get('lastDispatchError') or '').strip()
+    event = str(sched.get('lastEvent') or task.get('now') or '').strip()
+
+    if status == 'idle' and task.get('state') not in _TERMINAL_STATES:
+        detail = '任务已建立，但还没有派发尝试。'
+        next_action = 'retry'
+    elif status == 'queued':
+        detail = '已进入派发队列，等待调度线程启动。'
+        next_action = 'wait'
+    elif status == 'dispatching':
+        detail = '正在准备调用目标 Agent。'
+        next_action = 'wait'
+    elif status == 'waiting_gateway':
+        detail = '正在等待外部 Gateway 响应。'
+        next_action = 'check-gateway'
+    elif status == 'running':
+        detail = '派发进程已启动，等待 Agent 回报任务进展。'
+        next_action = 'wait'
+    elif status == 'success':
+        if sched.get('stateTransitionObserved') is False:
+            detail = 'Agent 进程已返回，但尚未写入下一阶段；请查看执行监控中的最后活动，避免重复派发。'
+        else:
+            detail = '派发命令已返回，等待 Agent 更新任务阶段。'
+        next_action = 'wait'
+    elif status == 'completed_no_transition':
+        detail = 'Agent 进程已返回，但任务仍停留在当前阶段；请查看最后活动或人工推进，避免重复调用。'
+        next_action = 'inspect'
+    elif status == 'disabled':
+        detail = '自动派发当前处于关闭状态，任务不会自动调用 Agent。'
+        next_action = 'enable-auto-dispatch'
+    elif status == 'cancelled':
+        detail = '本次派发已被皇上叫停或取消。'
+        next_action = 'resume'
+    elif status == 'awaiting_assignment':
+        detail = '尚书省尚未指定六部执行部门，尚未调用任何 Agent。'
+        next_action = 'assign-department'
+    elif status == 'not_needed':
+        detail = '当前阶段没有可自动派发的 Agent。'
+        next_action = 'manual'
+    elif error:
+        detail = error
+        next_action = 'resume'
+    else:
+        detail = event or '等待调度结果。'
+        next_action = 'retry'
+
+    if task.get('state') == 'Blocked' and error:
+        label = '派发失败'
+    return {
+        'dispatchStatus': status,
+        'dispatchStatusLabel': label,
+        'dispatchStatusDetail': detail,
+        'dispatchNextAction': next_action,
+        'dispatchMode': sched.get('lastDispatchMode') or '',
+        'lastEvent': event,
+        'lastEventAt': sched.get('lastEventAt') or '',
+    }
+
+
 def get_scheduler_state(task_id):
     tasks = load_tasks()
     task = next((t for t in tasks if t.get('id') == task_id), None)
@@ -1267,6 +2203,7 @@ def get_scheduler_state(task_id):
         'state': task.get('state', ''),
         'org': task.get('org', ''),
         'scheduler': sched,
+        **_scheduler_public_status(task, sched),
         'stalledSec': stalled_sec,
         'checkedAt': now_iso(),
     }
@@ -1525,24 +2462,32 @@ def handle_scheduler_scan(threshold_sec=600):
 
 
 def _startup_recover_queued_dispatches():
-    """服务启动后扫描 lastDispatchStatus=queued 的任务，重新派发。
-    解决：kill -9 重启导致派发线程中断、任务永久卡住的问题。"""
+    """服务启动后恢复没有完成派发的活动任务。
+
+    除了进程中断留下的 ``queued``，还要处理旧版本或手动模式留下
+    的 ``idle``。这些任务不能继续显示成“等待太子接旨”，否则用户看不
+    出 Agent 根本没有被调用。
+    """
     if not _auto_dispatch_enabled():
-        log.info('🔒 桌面安全模式：跳过启动恢复和 Agent 自动派发')
+        log.info('⏸️ 手动模式：跳过启动恢复和 Agent 自动派发')
         return
     tasks = load_tasks()
     recovered = 0
     for task in tasks:
         task_id = task.get('id', '')
         state = task.get('state', '')
-        if not task_id or state in _TERMINAL_STATES or task.get('archived'):
+        if not task_id or state in _TERMINAL_STATES | {'Blocked'} or task.get('archived'):
             continue
         sched = task.get('_scheduler') or {}
-        if sched.get('lastDispatchStatus') == 'queued':
-            log.info(f'🔄 启动恢复: {task_id} 状态={state} 上次派发未完成，重新派发')
-            sched['lastDispatchTrigger'] = 'startup-recovery'
-            dispatch_for_state(task_id, task, state, trigger='startup-recovery')
-            recovered += 1
+        status = sched.get('lastDispatchStatus', 'idle')
+        if status not in _DISPATCH_RECOVERY_STATUSES:
+            continue
+        with _ACTIVE_DISPATCH_LOCK:
+            if task_id in _ACTIVE_DISPATCHES:
+                continue
+        log.info(f'🔄 启动恢复: {task_id} 状态={state} 调度状态={status}，重新派发')
+        dispatch_for_state(task_id, task, state, trigger='startup-recovery')
+        recovered += 1
     if recovered:
         log.info(f'✅ 启动恢复完成: 重新派发 {recovered} 个任务')
     else:
@@ -1595,8 +2540,12 @@ def handle_repair_flow_order():
 
 def _collect_message_text(msg):
     """收集消息中的可检索文本，用于 task_id/关键词过滤。"""
+    if not isinstance(msg, dict):
+        return ''
     parts = []
     for c in msg.get('content', []) or []:
+        if not isinstance(c, dict):
+            continue
         ctype = c.get('type')
         if ctype == 'text' and c.get('text'):
             parts.append(str(c.get('text', '')))
@@ -1614,7 +2563,11 @@ def _collect_message_text(msg):
 
 def _parse_activity_entry(item):
     """将 session jsonl 的 message 统一解析成看板活动条目。"""
+    if not isinstance(item, dict):
+        return None
     msg = item.get('message') or {}
+    if not isinstance(msg, dict):
+        return None
     role = str(msg.get('role', '')).strip().lower()
     ts = item.get('timestamp', '')
 
@@ -1623,6 +2576,8 @@ def _parse_activity_entry(item):
         thinking = ''
         tool_calls = []
         for c in msg.get('content', []) or []:
+            if not isinstance(c, dict):
+                continue
             if c.get('type') == 'text' and c.get('text') and not text:
                 text = str(c.get('text', '')).strip()
             elif c.get('type') == 'thinking' and c.get('thinking') and not thinking:
@@ -1650,6 +2605,8 @@ def _parse_activity_entry(item):
             code = details.get('code', details.get('status'))
         output = ''
         for c in msg.get('content', []) or []:
+            if not isinstance(c, dict):
+                continue
             if c.get('type') == 'text' and c.get('text'):
                 output = str(c.get('text', '')).strip()[:200]
                 break
@@ -1675,6 +2632,8 @@ def _parse_activity_entry(item):
     if role == 'user':
         text = ''
         for c in msg.get('content', []) or []:
+            if not isinstance(c, dict):
+                continue
             if c.get('type') == 'text' and c.get('text'):
                 text = str(c.get('text', '')).strip()
                 break
@@ -1683,6 +2642,22 @@ def _parse_activity_entry(item):
         return {'at': ts, 'kind': 'user', 'text': text[:200]}
 
     return None
+
+
+def _agent_session_files(agent_id):
+    """Canonical session indexes also reference task-scoped local transcripts."""
+    sessions_dir = OCLAW_HOME / 'agents' / agent_id / 'sessions'
+    files = set(sessions_dir.glob('*.jsonl'))
+    store = read_json(sessions_dir / 'sessions.json', {})
+    allowed_roots = [OCLAW_HOME.resolve(), (DATA / 'dispatch-sessions').resolve()]
+    for entry in store.values() if isinstance(store, dict) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get('sessionFile'), str):
+            continue
+        file = pathlib.Path(entry['sessionFile'])
+        if file.is_file() and not file.is_symlink() and any(file.resolve().is_relative_to(root) for root in allowed_roots):
+            files.add(file)
+    return sorted((file for file in files if not file.name.endswith('.trajectory.jsonl')),
+                  key=lambda file: file.stat().st_mtime, reverse=True)
 
 
 def get_agent_activity(agent_id, limit=30, task_id=None):
@@ -1694,7 +2669,7 @@ def get_agent_activity(agent_id, limit=30, task_id=None):
         return []
 
     # 扫描所有 jsonl（按修改时间倒序），优先最新
-    jsonl_files = sorted(sessions_dir.glob('*.jsonl'), key=lambda f: f.stat().st_mtime, reverse=True)
+    jsonl_files = _agent_session_files(agent_id)
     if not jsonl_files:
         return []
 
@@ -1714,7 +2689,11 @@ def get_agent_activity(agent_id, limit=30, task_id=None):
                 item = json.loads(ln)
             except Exception:
                 continue
+            if not isinstance(item, dict):
+                continue
             msg = item.get('message') or {}
+            if not isinstance(msg, dict):
+                continue
             all_text = _collect_message_text(msg)
 
             # task_id 过滤：只保留提及 task_id 的条目
@@ -1762,7 +2741,7 @@ def get_agent_activity_by_keywords(agent_id, keywords, limit=20):
     if not sessions_dir.exists():
         return []
 
-    jsonl_files = sorted(sessions_dir.glob('*.jsonl'), key=lambda f: f.stat().st_mtime, reverse=True)
+    jsonl_files = _agent_session_files(agent_id)
     if not jsonl_files:
         return []
 
@@ -1795,10 +2774,16 @@ def get_agent_activity_by_keywords(agent_id, keywords, limit=20):
             item = json.loads(ln)
         except Exception:
             continue
+        if not isinstance(item, dict):
+            continue
         msg = item.get('message') or {}
+        if not isinstance(msg, dict):
+            continue
         if msg.get('role') == 'user':
             text = ''
             for c in msg.get('content', []):
+                if not isinstance(c, dict):
+                    continue
                 if c.get('type') == 'text' and c.get('text'):
                     text += c['text']
             user_msg_indices.append((i, text))
@@ -1832,6 +2817,8 @@ def get_agent_activity_by_keywords(agent_id, keywords, limit=20):
         try:
             item = json.loads(ln)
         except Exception:
+            continue
+        if not isinstance(item, dict):
             continue
         entry = _parse_activity_entry(item)
         if entry:
@@ -1867,7 +2854,11 @@ def get_agent_latest_segment(agent_id, limit=20):
             item = json.loads(ln)
         except Exception:
             continue
+        if not isinstance(item, dict):
+            continue
         msg = item.get('message') or {}
+        if not isinstance(msg, dict):
+            continue
         if msg.get('role') == 'user':
             last_user_idx = i
 
@@ -1880,6 +2871,8 @@ def get_agent_latest_segment(agent_id, limit=20):
         try:
             item = json.loads(ln)
         except Exception:
+            continue
+        if not isinstance(item, dict):
             continue
         entry = _parse_activity_entry(item)
         if entry:
@@ -2013,10 +3006,11 @@ def get_task_activity(task_id):
         'archived': task.get('archived', False),
     }
 
-    # 当前负责 Agent（兼容旧逻辑）
+    # 当前负责 Agent（兼容旧逻辑）。六部阶段必须从明确的执行部门解析，
+    # 不再把无法识别的记录交回中书省或伪装成“无数据”。
     agent_id = _STATE_AGENT_MAP.get(state)
     if agent_id is None and state in ('Doing', 'Next'):
-        agent_id = _ORG_AGENT_MAP.get(org)
+        _, agent_id = _resolve_execution_assignment(task)
 
     # ── 构建活动条目列表（flow_log + progress_log）──
     activity = []
@@ -2027,6 +3021,7 @@ def get_task_activity(task_id):
         activity.append({
             'at': fl.get('at', ''),
             'kind': 'flow',
+            'scheduler': fl.get('kind') == 'scheduler' or fl.get('from') == '太子调度',
             'from': fl.get('from', ''),
             'to': fl.get('to', ''),
             'remark': fl.get('remark', ''),
@@ -2248,31 +3243,134 @@ _STATE_LABELS = {
 }
 
 
+def _mark_waiting_for_execution_assignment(task, sched, trigger='state-transition'):
+    """Keep a task at 尚书省 until one of the six departments is selected."""
+    reason = '尚书省尚未指定六部执行部门，未调用 Agent。'
+    previous_state = task.get('state', '')
+    if previous_state in {'Doing', 'Next'}:
+        task['_prev_state'] = 'Assigned'
+    task['state'] = 'Assigned'
+    task['org'] = '尚书省'
+    task['block'] = '无'
+    task['now'] = f'⏳ {reason}'
+    task['dispatchAssignmentRequired'] = True
+    task['dispatchAssignmentError'] = reason
+    sched.update({
+        'lastDispatchAt': now_iso(),
+        'lastDispatchStatus': 'awaiting_assignment',
+        'lastDispatchMode': '',
+        'lastDispatchAgent': '',
+        'lastDispatchTrigger': trigger,
+        'lastDispatchError': '',
+        'dispatchAttemptId': '',
+        'dispatchQueuedAt': '',
+        'dispatchStartedAt': '',
+    })
+    _scheduler_set_event(task, reason, status='awaiting_assignment')
+    _scheduler_add_flow(task, reason, to='尚书省')
+
+
+def _hold_for_execution_assignment(task_id, new_state, trigger='state-transition'):
+    """Repair an invalid execution-stage record without invoking any Agent."""
+    def _apply(task, sched):
+        if task.get('state') not in {new_state, 'Doing', 'Next'}:
+            return
+        _mark_waiting_for_execution_assignment(task, sched, trigger)
+
+    return _update_task_scheduler(task_id, _apply)
+
+
 def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
     """推进/审批后自动派发对应 Agent（后台异步，不阻塞响应）。"""
+    execution_department = ''
+    execution_agent = ''
+    if new_state in ('Doing', 'Next'):
+        execution_department, execution_agent = _resolve_execution_assignment(task)
+        if not execution_agent:
+            log.error(f'⛔ {task_id} 无法解析六部执行 Agent，拒绝盲目派发')
+            _hold_for_execution_assignment(task_id, new_state, trigger=trigger)
+            return
     if not _auto_dispatch_enabled():
-        log.info(f'🔒 {task_id} 自动派发已禁用（桌面安全模式）')
+        log.info(f'⏸️ {task_id} 自动派发已关闭（手动模式）')
+        reason = '自动派发已关闭（手动模式）'
+        _update_task_scheduler(task_id, lambda t, s: (
+            s.update({
+                'lastDispatchAt': '',
+                'lastDispatchStatus': 'disabled',
+                'lastDispatchMode': 'disabled',
+                'lastDispatchAgent': '',
+                'lastDispatchTrigger': trigger,
+                'lastDispatchError': reason,
+                'dispatchAttemptId': '',
+                'dispatchQueuedAt': '',
+                'dispatchStartedAt': '',
+            }),
+            t.update({'now': f'⏸️ {reason}'}) if t.get('state') == new_state else None,
+            _scheduler_set_event(t, reason, status='disabled'),
+            _scheduler_add_flow(t, reason, to=t.get('org', '')),
+        ))
         return
     agent_id = _STATE_AGENT_MAP.get(new_state)
     if agent_id is None and new_state in ('Doing', 'Next'):
-        org = task.get('org', '')
-        agent_id = _ORG_AGENT_MAP.get(org)
+        agent_id = execution_agent
     if not agent_id:
-        log.info(f'ℹ️ {task_id} 新状态 {new_state} 无对应 Agent，跳过自动派发')
+        log.info(f'ℹ️ {task_id} 新状态 {new_state} 无需自动派发')
+        reason = f'状态 {new_state} 无需自动派发'
+        _update_task_scheduler(task_id, lambda t, s: (
+            s.update({
+                'lastDispatchStatus': 'not_needed',
+                'lastDispatchMode': '',
+                'lastDispatchAgent': '',
+                'lastDispatchTrigger': trigger,
+                'lastDispatchError': reason,
+            }),
+            _scheduler_set_event(t, reason, status='not_needed'),
+        ))
         return
 
-    _update_task_scheduler(task_id, lambda t, s: (
+    # Desktop workspaces use the bundled OpenClaw in embedded/local mode until
+    # an external channel has been explicitly enabled and verified. Keeping
+    # the opt-in gate in the server prevents stale UI/config state from
+    # silently sending a task through an unauthenticated Gateway.
+    _channel = _dispatch_channel_config()
+    _local_dispatch = os.environ.get('EDICT_DESKTOP') == '1' and not _channel
+
+    attempt_id = uuid.uuid4().hex[:16]
+    queued_at = now_iso()
+    queue_result = {'ok': False}
+
+    def _queue_dispatch(t, s):
+        # A stale callback must never enqueue a dispatch for a newer stage.
+        if t.get('state') != new_state:
+            return
+        if execution_department:
+            t['org'] = execution_department
+            t['targetDept'] = execution_department
+            t['targetAgent'] = agent_id
+            t.pop('dispatchAssignmentRequired', None)
+            t.pop('dispatchAssignmentError', None)
         s.update({
-            'lastDispatchAt': now_iso(),
+            'lastDispatchAt': queued_at,
             'lastDispatchStatus': 'queued',
             'lastDispatchAgent': agent_id,
             'lastDispatchTrigger': trigger,
-        }),
-        _scheduler_add_flow(t, f'已入队派发：{new_state} → {agent_id}（{trigger}）', to=_STATE_LABELS.get(new_state, new_state))
-    ))
+            'lastDispatchMode': 'local' if _local_dispatch else 'gateway',
+            'lastDispatchError': '',
+            'dispatchAttemptId': attempt_id,
+            'dispatchQueuedAt': queued_at,
+            'dispatchStartedAt': '',
+        })
+        t['now'] = f'🧭 已入队派发：{_STATE_LABELS.get(new_state, new_state)} → {agent_id}'
+        _scheduler_add_flow(t, f'已入队派发：{new_state} → {agent_id}（{trigger}）', to=execution_department or _STATE_LABELS.get(new_state, new_state))
+        queue_result['ok'] = True
+
+    _update_task_scheduler(task_id, _queue_dispatch)
+    if not queue_result['ok']:
+        log.info(f'ℹ️ {task_id} 状态已变化，跳过过期派发请求：{new_state}')
+        return
 
     title = task.get('title', '(无标题)')
-    target_dept = task.get('targetDept', '')
+    target_dept = execution_department or task.get('targetDept', '')
 
     # 根据 agent_id 构造针对性消息
     _msgs = {
@@ -2312,7 +3410,20 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
         f'旨意: {title}\n'
         f'⚠️ 看板已有此任务，请勿重复创建。直接用 kanban_update.py 更新状态。'
     ))
+    if task.get('dispatchMessage'):
+        msg += '\n\n总控台原始指令（请按此执行，不要另建任务）：\n' + str(task.get('dispatchMessage'))[:12_000]
     approved = task.get('templateParams') or {}
+    project_dir = str(task.get('projectPath') or os.environ.get('EDICT_PROJECT_DIR', '')).strip()
+    if project_dir:
+        msg += (
+            '\n当前项目目录（本旨意的唯一工作项目）：'
+            + project_dir[:2_000]
+            + '\n涉及代码、文档或测试时，请只在该项目目录内完成。完成的文件请优先写入 Edict_Output/'
+            + task_id
+            + '，并在回奏中列出实际产出路径和测试结果。'
+        )
+    if task.get('outputDir'):
+        msg += '\n本任务指定输出目录：' + str(task.get('outputDir'))[:2_000]
     if approved.get('yushufangRoomId') and approved.get('proposalId'):
         msg += (
             '\n御书房已御批事项（仅以下内容获准转交，不包含其他密谈记录）：\n'
@@ -2320,119 +3431,165 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
             + '\n' + str(approved.get('detail') or '')[:2000]
         )
 
+    record = _register_dispatch(task_id, attempt_id)
+    record['local_tree'] = _local_dispatch
+
     def _do_dispatch():
+        dispatch_runtime_root = None
         try:
-            # Gateway 可能暂时不可达（休眠恢复、进程重启），等待后重试
-            import time as _time
-            _gw_alive = False
-            for _gw_attempt in range(3):
-                if _check_gateway_alive():
-                    _gw_alive = True
-                    break
-                if _gw_attempt < 2:
-                    _time.sleep(5 * (_gw_attempt + 1))  # 5s, 10s
-            if not _gw_alive:
-                log.warning(f'⚠️ {task_id} 自动派发跳过: Gateway 未启动（重试3次仍不可达）')
-                _update_task_scheduler(task_id, lambda t, s: s.update({
-                    'lastDispatchAt': now_iso(),
-                    'lastDispatchStatus': 'gateway-offline',
-                    'lastDispatchAgent': agent_id,
-                    'lastDispatchTrigger': trigger,
-                }))
+            if not _dispatch_target_is_active(task_id, new_state, record):
                 return
-            # Fix #139/#182: dispatch channel 可配置；未配置时不传 --deliver 避免
-            # "unknown channel: feishu" 错误（非飞书用户）
-            _agent_cfg = read_json(DATA / 'agent_config.json', {})
-            _channel = (_agent_cfg.get('dispatchChannel') or '').strip()
+
+            _dispatch_scheduler_update(task_id, record, lambda t, s: (
+                s.update({'dispatchStartedAt': now_iso()}),
+                _scheduler_set_event(t, '正在准备调用 Agent', status='dispatching'),
+            ), expected_state=new_state)
+
+            # External channels use the user's Gateway. Local task RPC uses
+            # its own supervised transport and never waits on that service.
+            if _channel:
+                _preflight_ok, _preflight_detail = _external_dispatch_preflight(_channel)
+                if not _preflight_ok:
+                    err = f'外部派发未通过开工体检：{_preflight_detail}'
+                    log.warning(f'⚠️ {task_id} 自动派发阻塞: {err}')
+                    _record_dispatch_failure(task_id, record, new_state, agent_id, trigger, 'preflight-blocked', err, '外部派发配置未就绪')
+                    return
+            if not _local_dispatch:
+                _dispatch_scheduler_update(task_id, record, lambda t, s: (
+                    _scheduler_set_event(t, '正在等待外部 Gateway 响应', status='waiting_gateway'),
+                ), expected_state=new_state)
+                import time as _time
+                _gw_alive = False
+                for _gw_attempt in range(3):
+                    if not _dispatch_target_is_active(task_id, new_state, record):
+                        return
+                    if _check_gateway_alive():
+                        _gw_alive = True
+                        break
+                    if _gw_attempt < 2:
+                        if record['cancel_event'].wait(5 * (_gw_attempt + 1)):
+                            return
+                if not _gw_alive:
+                    err = '外部派发渠道需要 OpenClaw Gateway；当前 Gateway 未运行，请启动 Gateway 或在设置中检查渠道配置。'
+                    log.warning(f'⚠️ {task_id} 自动派发失败: {err}')
+                    _record_dispatch_failure(task_id, record, new_state, agent_id, trigger, 'gateway-offline', err, 'Gateway 未运行')
+                    return
+
             openclaw_bin = _resolve_openclaw_bin()
             if not openclaw_bin:
-                err = 'OpenClaw CLI 未找到：请确认已安装 openclaw 并加入 PATH；Windows 可设置 OPENCLAW_BIN 指向 openclaw.cmd'
+                err = 'OpenClaw CLI 未找到：请确认应用内置运行时完整，或在设置中检查运行依赖。'
                 log.warning(f'⚠️ {task_id} 自动派发异常: {err}')
-                _update_task_scheduler(task_id, lambda t, s: (
-                    s.update({
-                        'lastDispatchAt': now_iso(),
-                        'lastDispatchStatus': 'openclaw-missing',
-                        'lastDispatchAgent': agent_id,
-                        'lastDispatchTrigger': trigger,
-                        'lastDispatchError': err,
-                    }),
-                    _scheduler_add_flow(t, f'派发异常：OpenClaw CLI 未找到（{trigger}）', to=t.get('org', ''))
-                ))
+                _record_dispatch_failure(task_id, record, new_state, agent_id, trigger, 'openclaw-missing', err, 'OpenClaw 不可用')
                 return
-            cmd = [openclaw_bin, 'agent', '--agent', agent_id, '-m', msg, '--timeout', '300']
+
+            cmd = [openclaw_bin, 'agent']
+            cmd.extend(['--agent', agent_id, '-m', msg, '--timeout', '300'])
             if _channel:
                 cmd.extend(['--deliver', '--channel', _channel])
-            max_retries = 2
+            dispatch_environment = runtime_environment()
+            dispatch_runtime_root = None
+            if _local_dispatch:
+                source_path = pathlib.Path(
+                    dispatch_environment.get('OPENCLAW_CONFIG_PATH')
+                    or pathlib.Path(dispatch_environment.get('EDICT_OPENCLAW_HOME', str(pathlib.Path.home() / '.openclaw'))) / 'openclaw.json'
+                ).expanduser()
+                dispatch_runtime_root = DATA / 'dispatch-runtime' / attempt_id / agent_id
+                _, dispatch_environment, _ = prepare_local_dispatch_runtime(
+                    dispatch_runtime_root,
+                    agent_id,
+                    source_path,
+                    base_environment=dispatch_environment,
+                    managed_gateway=True,
+                )
+                dispatch_environment['EDICT_DISPATCH_STATE_DIR'] = str(DATA / 'dispatch-sessions' / attempt_id)
+                # --local still needs Gateway RPC for native subagent announce.
+                # Supervise a private loopback transport instead of using the
+                # user's external-channel Gateway or an unauthenticated CLI.
+                cmd = [python_bin(), str(SCRIPTS / 'local_dispatch.py'), openclaw_bin,
+                       '--agent', agent_id, '--session-key', f'agent:{agent_id}:edict:{attempt_id}',
+                       '-m', msg, '--timeout', '260']
+            # A local turn may already have spawned work. Never replay the
+            # whole tree automatically after an ambiguous failure.
+            max_retries = 1 if _local_dispatch else 2
             err = ''
             for attempt in range(1, max_retries + 1):
-                log.info(f'🔄 自动派发 {task_id} → {agent_id} (第{attempt}次)...')
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=310, env=runtime_environment())
-                if result.returncode == 0:
+                if not _dispatch_target_is_active(task_id, new_state, record):
+                    return
+                log.info(f'🔄 自动派发 {task_id} → {agent_id} ({"本地" if _local_dispatch else _channel} 第{attempt}次)...')
+                _dispatch_scheduler_update(task_id, record, lambda t, s: (
+                    _scheduler_set_event(t, f'正在调用 {agent_id}', status='running'),
+                ), expected_state=new_state)
+                popen_options = {
+                    'stdout': subprocess.PIPE,
+                    'stderr': subprocess.PIPE,
+                    'text': True,
+                    'env': dispatch_environment,
+                }
+                if os.name != 'nt':
+                    popen_options['start_new_session'] = True
+                process = subprocess.Popen(cmd, **popen_options)
+                if not _attach_dispatch_process(task_id, record, process):
+                    return
+                try:
+                    stdout, stderr = process.communicate(timeout=310)
+                except subprocess.TimeoutExpired:
+                    _terminate_dispatch_process(process)
+                    raise
+                if record['cancel_event'].is_set() or not _dispatch_is_current(task_id, record):
+                    return
+                if process.returncode == 0:
                     log.info(f'✅ {task_id} 自动派发成功 → {agent_id}')
-                    _update_task_scheduler(task_id, lambda t, s: (
+                    record['stdout'] = (stdout or '')[-8_000:]
+
+                    def _record_success(t, s):
+                        state_unchanged = t.get('state') == new_state
                         s.update({
                             'lastDispatchAt': now_iso(),
                             'lastDispatchStatus': 'success',
                             'lastDispatchAgent': agent_id,
                             'lastDispatchTrigger': trigger,
                             'lastDispatchError': '',
-                        }),
+                            'stateTransitionObserved': not state_unchanged,
+                        })
                         _scheduler_add_flow(t, f'派发成功：{agent_id}（{trigger}）', to=t.get('org', ''))
-                    ))
+                        if state_unchanged:
+                            _scheduler_set_event(t, f'{agent_id} 进程已返回，尚未观察到任务阶段更新', status='success')
+                            if t.get('dispatchKind') == 'small':
+                                t['state'] = 'Done'
+                                t['org'] = '回奏'
+                                t['now'] = f'✅ 小任务完成：{agent_id} 已回奏'
+                                t['output'] = t.get('output') or t.get('outputDir', '')
+                                t['smallResult'] = record.get('stdout', '')
+                                t.setdefault('flow_log', []).append({
+                                    'at': now_iso(), 'from': agent_id, 'to': '回奏',
+                                    'remark': '小任务执行完成并回奏',
+                                })
+                                s['stateTransitionObserved'] = True
+
+                    _dispatch_scheduler_update(task_id, record, _record_success, expected_state=None if _local_dispatch else new_state)
                     return
-                err = result.stderr[:200] if result.stderr else result.stdout[:200]
+                err = (stderr or stdout or '').strip()[:500] or f'OpenClaw 返回退出码 {process.returncode}'
                 log.warning(f'⚠️ {task_id} 自动派发失败(第{attempt}次): {err}')
-                if attempt < max_retries:
-                    import time
-                    time.sleep(5)
+                if attempt < max_retries and record['cancel_event'].wait(5):
+                    return
             log.error(f'❌ {task_id} 自动派发最终失败 → {agent_id}')
-            _update_task_scheduler(task_id, lambda t, s: (
-                s.update({
-                    'lastDispatchAt': now_iso(),
-                    'lastDispatchStatus': 'failed',
-                    'lastDispatchAgent': agent_id,
-                    'lastDispatchTrigger': trigger,
-                    'lastDispatchError': err,
-                }),
-                _scheduler_add_flow(t, f'派发失败：{agent_id}（{trigger}）', to=t.get('org', ''))
-            ))
+            _record_dispatch_failure(task_id, record, new_state, agent_id, trigger, 'failed', err, 'Agent 派发失败')
         except subprocess.TimeoutExpired:
             log.error(f'❌ {task_id} 自动派发超时 → {agent_id}')
-            _update_task_scheduler(task_id, lambda t, s: (
-                s.update({
-                    'lastDispatchAt': now_iso(),
-                    'lastDispatchStatus': 'timeout',
-                    'lastDispatchAgent': agent_id,
-                    'lastDispatchTrigger': trigger,
-                    'lastDispatchError': 'timeout',
-                }),
-                _scheduler_add_flow(t, f'派发超时：{agent_id}（{trigger}）', to=t.get('org', ''))
-            ))
+            _record_dispatch_failure(task_id, record, new_state, agent_id, trigger, 'timeout', 'OpenClaw 执行超过 310 秒未返回', 'Agent 派发超时')
         except FileNotFoundError as e:
             err = f'OpenClaw CLI 未找到：{e}'
             log.warning(f'⚠️ {task_id} 自动派发异常: {err}')
-            _update_task_scheduler(task_id, lambda t, s: (
-                s.update({
-                    'lastDispatchAt': now_iso(),
-                    'lastDispatchStatus': 'openclaw-missing',
-                    'lastDispatchAgent': agent_id,
-                    'lastDispatchTrigger': trigger,
-                    'lastDispatchError': err[:200],
-                }),
-                _scheduler_add_flow(t, f'派发异常：OpenClaw CLI 未找到（{trigger}）', to=t.get('org', ''))
-            ))
+            _record_dispatch_failure(task_id, record, new_state, agent_id, trigger, 'openclaw-missing', err, 'OpenClaw 不可用')
         except Exception as e:
+            if record['cancel_event'].is_set() or not _dispatch_is_current(task_id, record):
+                return
             log.warning(f'⚠️ {task_id} 自动派发异常: {e}')
-            _update_task_scheduler(task_id, lambda t, s: (
-                s.update({
-                    'lastDispatchAt': now_iso(),
-                    'lastDispatchStatus': 'error',
-                    'lastDispatchAgent': agent_id,
-                    'lastDispatchTrigger': trigger,
-                    'lastDispatchError': str(e)[:200],
-                }),
-                _scheduler_add_flow(t, f'派发异常：{agent_id}（{trigger}）', to=t.get('org', ''))
-            ))
+            _record_dispatch_failure(task_id, record, new_state, agent_id, trigger, 'error', str(e), 'Agent 派发异常')
+        finally:
+            if _local_dispatch and dispatch_runtime_root:
+                shutil.rmtree(dispatch_runtime_root, ignore_errors=True)
+            _unregister_dispatch(task_id, record)
 
     threading.Thread(target=_do_dispatch, daemon=True).start()
     log.info(f'🚀 {task_id} 推进后自动派发 → {agent_id}')
@@ -2452,12 +3609,31 @@ def handle_advance_state(task_id, comment=''):
     next_state, from_dept, to_dept, default_remark = _STATE_FLOW[cur]
     remark = comment or default_remark
 
+    # 尚书省必须先明确六部中的一个执行部门，才能进入 Doing。
+    # 这里在状态落盘前拦截，避免“先进入执行中、再发现没有 Agent”的空转。
+    execution_department = ''
+    if next_state in ('Doing', 'Next'):
+        execution_department, _ = _resolve_execution_assignment(task)
+        if not execution_department:
+            _mark_waiting_for_execution_assignment(task, task['_scheduler'], trigger='manual-advance')
+            task['updatedAt'] = now_iso()
+            save_tasks(tasks)
+            return {
+                'ok': True,
+                'message': f'{task_id} 尚书省尚未指定六部执行部门，已停在派发阶段，未调用 Agent',
+            }
+
     task['state'] = next_state
+    if execution_department:
+        task['org'] = execution_department
+        task['targetDept'] = execution_department
+        task.pop('dispatchAssignmentRequired', None)
+        task.pop('dispatchAssignmentError', None)
     task['now'] = f'⬇️ 手动推进：{remark}'
     task.setdefault('flow_log', []).append({
         'at': now_iso(),
         'from': from_dept,
-        'to': to_dept,
+        'to': execution_department or to_dept,
         'remark': f'⬇️ 手动推进：{remark}'
     })
     _scheduler_mark_progress(task, f'手动推进 {cur} -> {next_state}')
@@ -2553,7 +3729,19 @@ class Handler(BaseHTTPRequestHandler):
         if p == '/api/auth/status':
             self.send_json({'enabled': auth_enabled(), 'configured': auth_configured()})
             return
+
+        # Command center and workspace inspection are protected like the rest
+        # of the application API.  Keep only the authentication status endpoint
+        # public so the desktop shell can decide whether to show login/setup.
         if self._check_auth():
+            return
+
+        if p == '/api/command-center':
+            self.send_json(get_command_center())
+            return
+        if p.startswith('/api/task-workspace/'):
+            task_id = p.replace('/api/task-workspace/', '', 1)
+            self.send_json(get_task_workspace(task_id), 200)
             return
         if p == '/api/model-capabilities':
             try:
@@ -2807,6 +3995,44 @@ class Handler(BaseHTTPRequestHandler):
         if self._check_auth():
             return
 
+        if p == '/api/preflight/repair':
+            action = body.get('action', '')
+            if not isinstance(action, str):
+                self.send_json({'ok': False, 'error': 'action 必须是字符串'}, 400)
+                return
+            result = repair_readiness(action.strip())
+            self.send_json(result, 200 if result.get('ok') else 400)
+            return
+
+        if p == '/api/command-center/message':
+            result = handle_command_center_message(body)
+            self.send_json(result, 200 if result.get('ok') else 400)
+            return
+
+        if p == '/api/command-center/approve':
+            result = handle_command_center_approve()
+            self.send_json(result, 200 if result.get('ok') else 400)
+            return
+
+        if p == '/api/task-workspace/test':
+            task_id = str(body.get('taskId') or '').strip()
+            command_id = str(body.get('commandId') or '').strip()
+            if not task_id:
+                self.send_json({'ok': False, 'error': 'taskId required'}, 400)
+                return
+            result = start_task_workspace_test(task_id, command_id)
+            self.send_json(result, 200 if result.get('ok') else 400)
+            return
+
+        if p == '/api/task-workspace/test/cancel':
+            run_id = str(body.get('runId') or '').strip()
+            if not run_id or not _SAFE_NAME_RE.fullmatch(run_id):
+                self.send_json({'ok': False, 'error': 'runId required'}, 400)
+                return
+            result = cancel_workspace_run(run_id)
+            self.send_json(result, 200 if result.get('ok') else 400)
+            return
+
         if p == '/api/morning-config':
             if not isinstance(body, dict):
                 self.send_json({'ok': False, 'error': '请求体必须是 JSON 对象'}, 400)
@@ -3015,7 +4241,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': False, 'error': 'title required'}, 400)
                 return
             target_dept = body.get('targetDept', '').strip()
-            result = handle_create_task(title, org, official, priority, template_id, params, target_dept)
+            result = handle_create_task(
+                title, org, official, priority, template_id, params, target_dept,
+                body.get('workflowMode', 'standard'), body.get('permissionMode', 'full'),
+                body.get('plan') if isinstance(body.get('plan'), dict) else None,
+                str(body.get('commandMessageId') or '').strip(),
+            )
             self.send_json(result)
             return
 
@@ -3166,18 +4397,33 @@ class Handler(BaseHTTPRequestHandler):
                 'agentCount': agent_count,
             })
 
-        # Fix #139: 设置派发渠道（feishu/telegram/wecom/signal/tui）
+        # 设置派发渠道（feishu/telegram/wecom/signal/tui）。
+        # channel 可以保留为已配置的候选渠道，但必须显式 enabled=true
+        # 才能让调度器离开桌面本地模式。
         elif p == '/api/set-dispatch-channel':
-            channel = body.get('channel', '').strip()
+            channel = body.get('channel', '')
+            if not isinstance(channel, str):
+                channel = ''
+            channel = channel.strip().lower()
+            enabled = body.get('enabled')
+            if enabled is None:
+                enabled = bool(channel)
             allowed = {'feishu', 'telegram', 'wecom', 'signal', 'tui', 'discord', 'slack'}
-            if not channel or channel not in allowed:
+            if channel and channel not in allowed:
                 self.send_json({'ok': False, 'error': f'channel must be one of: {", ".join(sorted(allowed))}'}, 400)
+                return
+            if not isinstance(enabled, bool):
+                self.send_json({'ok': False, 'error': 'enabled must be a boolean'}, 400)
                 return
             def _set_channel(cfg):
                 cfg['dispatchChannel'] = channel
+                cfg['dispatchChannelEnabled'] = bool(enabled and channel)
                 return cfg
             atomic_json_update(DATA / 'agent_config.json', _set_channel, {})
-            self.send_json({'ok': True, 'message': f'派发渠道已切换为 {channel}'})
+            if enabled and channel:
+                self.send_json({'ok': True, 'message': f'派发渠道已开启：{channel}', 'dispatchChannel': channel, 'dispatchChannelEnabled': True})
+            else:
+                self.send_json({'ok': True, 'message': '外部派发已关闭，将使用桌面内置本地派发。', 'dispatchChannel': channel, 'dispatchChannelEnabled': False})
 
         # ── 朝堂议政 POST ──
         elif p == '/api/chat-attachments/remove':
@@ -3367,7 +4613,7 @@ def main():
         threading.Thread(target=_periodic_scheduler_scan, daemon=True).start()
         log.info('🔍 定时巡检已启动（每120秒）')
     else:
-        log.info('🔒 桌面安全模式：自动派发与定时巡检已禁用')
+        log.info('⏸️ 手动模式：自动派发与定时巡检已关闭')
 
     try:
         server.serve_forever()

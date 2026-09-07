@@ -2,6 +2,15 @@
 
 Release descriptions are maintained in English on the [GitHub Releases page](https://github.com/Logosss1/Edict_InnerCourt/releases). Each version keeps its own installation packages; later releases do not overwrite earlier ones.
 
+## 0.3.1
+
+- Make desktop task dispatch work locally by default after provider/model setup, without requiring a separately running OpenClaw Gateway.
+- Make task controls operational: stop, cancel, resume, retry, archive, and delete now validate state, report failures, and terminate active local dispatches when requested.
+- Add five bundled project-native Skills for triage, planning, review, coding, and documentation while preserving the original Three Departments and Six Ministries workflow.
+- Add bundled local MCP tools for workspace file listing, safe file reading/search, and project-scoped memory; existing user MCP configuration is preserved.
+- Add regression coverage for task actions, built-in capabilities, local dispatch, cancellation, packaged startup, and the full desktop UI flow.
+- Publish new Intel and Apple Silicon ZIP packages without replacing any earlier release artifacts.
+
 ## 0.2.1
 
 - Move core OpenClaw setup into the desktop app: bundled runtime, Agent/workspace defaults, shared-session visibility, and first-run data initialization.

@@ -49,6 +49,15 @@ export default function Yushufang() {
   })
   const thinkingLevels = sharedThinkingLevels(targetCapabilities)
   const thinkingReady = !modelCapabilities.loading && !modelCapabilities.error && thinkingLevels.includes(thinking)
+  const busyLabel = busy === 'resume'
+    ? '正在恢复议事，等待会话状态同步…'
+    : busy === 'cancel'
+      ? '正在叫停本轮回奏…'
+      : busy === 'open'
+        ? '正在开启御书房…'
+        : busy
+          ? '正在处理御书房操作…'
+          : ''
 
   const checkRuntime = useCallback(async () => {
     setCheckingRuntime(true)
@@ -200,11 +209,12 @@ export default function Yushufang() {
   const canOpen = !busy && !loading && !activeRoom && topic.trim() && (audience === 'prince' ? Boolean(prince) : selected.length > 0)
 
   return (
-    <div className="yushu-page">
+    <div className="yushu-page" aria-busy={Boolean(busy)}>
       <header className="yushu-header">
         <h2>御书房</h2>
         <div className="yushu-header-actions">
           <span className="yushu-policy"><ShieldCheck size={15} />议事调研 · 执行须御批</span>
+          {busy && <span className="async-action-status" role="status" aria-live="polite">⟳ {busyLabel}</span>}
           <button className="btn btn-g" onClick={() => void load()} disabled={Boolean(busy) || loading} title="刷新御书房" aria-label="刷新御书房"><RefreshCw size={16} /></button>
           <button className="btn btn-g" onClick={() => beginRoom('ministers')} disabled={Boolean(busy)}><MessageSquare size={15} />新议事</button>
         </div>
@@ -266,8 +276,8 @@ export default function Yushufang() {
             <div className="yushu-room-head">
               <div><div className="yushu-room-id">{isPrince ? '太子密谈' : '臣子议事'} · {room.roomId}</div><h3>{room.topic}</h3><span className={`yushu-phase ${room.phase}`}>{phaseLabel(room.phase)}</span></div>
               <div className="yushu-room-actions">
-                {running && <button className="btn btn-g" onClick={() => void run('cancel', () => yushufangApi.cancel(room.roomId))} disabled={Boolean(busy)}><Pause size={14} />叫停</button>}
-                {paused && <button className="btn btn-g" onClick={() => void run('resume', () => yushufangApi.resume(room.roomId, thinking))} disabled={Boolean(busy) || !runtime?.ok || !thinkingReady}><Play size={14} />{failed ? '重试未完成回奏' : '继续议事'}</button>}
+                {running && <button className="btn btn-g" onClick={() => void run('cancel', () => yushufangApi.cancel(room.roomId))} disabled={Boolean(busy)}><Pause size={14} />{busy === 'cancel' ? '叫停中…' : '叫停'}</button>}
+                {paused && <button className="btn btn-g" onClick={() => void run('resume', () => yushufangApi.resume(room.roomId, thinking))} disabled={Boolean(busy) || !runtime?.ok || !thinkingReady}><Play size={14} />{busy === 'resume' ? '恢复中…' : failed ? '重试未完成回奏' : '继续议事'}</button>}
                 {active && <button className="btn btn-g" onClick={() => void run('conclude', () => yushufangApi.conclude(room.roomId))} disabled={Boolean(busy) || running || Boolean(room.pendingMessages?.length)}><Check size={14} />结束议事</button>}
                 {active && <button className="btn btn-danger" onClick={() => { if (window.confirm('解散当前议事，移出参会人并撤回排队圣谕？历史记录会保留。')) void run('disband', () => yushufangApi.disband(room.roomId)) }} disabled={Boolean(busy)}><LogOut size={14} />解散</button>}
               </div>

@@ -94,7 +94,7 @@ test('full settings uses the dashboard dark theme and editable provider fields',
   await page.addInitScript(() => {
     window.edictDesktop = {
       listProviders: async () => [],
-      getDiagnostics: async () => ({ startupState: 'ready', runtimeOptions: {} }),
+      getDiagnostics: async () => ({ startupState: 'ready', version: '0.3.1-test', runtimeOptions: {}, workspace: { name: '测试工作区', projectPath: '/fixture/project' }, dataDirectory: '/fixture/data', runtimeDependencies: { openclawPath: '/fixture/openclaw', nodePath: '/fixture/node' } }),
       getOpenClawSnapshot: async () => ({ agents: [], mcpServers: [], network: { search: { enabled: true }, fetch: { enabled: true } } }),
       getAgentBindings: async () => ({ agents: [] }),
       getObservability: async () => ({ activeTasks: [], agentsStatus: {}, recentErrors: [] }),
@@ -111,10 +111,20 @@ test('full settings uses the dashboard dark theme and editable provider fields',
   await expect(page.locator('#provider-key')).toHaveValue('fixture-secret')
   expect(await page.locator('body').evaluate(el => getComputedStyle(el).backgroundColor)).toBe('rgb(7, 9, 15)')
   await page.screenshot({ path: 'test-results/settings-desktop.png', fullPage: true })
-  for (const tab of ['agents', 'runtime', 'mcp', 'ops']) {
+  for (const tab of ['general', 'agents', 'runtime', 'dependencies', 'skills', 'mcp', 'ops', 'about']) {
     await page.locator(`[data-tab="${tab}"]`).click()
     await expect(page.locator(`#tab-${tab}`)).toBeVisible()
   }
+  await expect(page.locator('#general-workspace')).toHaveText('测试工作区')
+  await expect(page.locator('#about-version')).toHaveText('0.3.1-test')
+  await page.locator('[data-tab="ops"]').click()
+  await page.locator('#copy-ops-json').click()
+  await expect(page.locator('#ops-copy-status')).toHaveText('诊断 JSON 已复制到剪贴板。')
+  await page.locator('#settings-search').fill('MCP')
+  await expect(page.locator('[data-tab="mcp"]')).toBeVisible()
+  await expect(page.locator('[data-tab="providers"]')).toBeHidden()
+  await page.locator('#settings-search').fill('')
+  await expect(page.locator('[data-tab="providers"]')).toBeVisible()
   await page.setViewportSize({ width: 760, height: 900 })
   await page.locator('[data-tab="providers"]').click()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy()
@@ -156,6 +166,7 @@ test('桌面版可在软件内配置 OpenClaw 派发渠道', async ({ page }) =>
   })
   await page.route('**/api/agent-config', route => route.fulfill({ json: {
     dispatchChannel: 'feishu',
+    dispatchChannelEnabled: false,
     agents: [{ id: 'zhongshu', label: '中书令', role: '中书省', model: 'fixture/model', thinkingDefault: 'default' }],
   } }))
   await page.route('**/api/model-change-log', route => route.fulfill({ json: [] }))
@@ -163,14 +174,18 @@ test('桌面版可在软件内配置 OpenClaw 派发渠道', async ({ page }) =>
   await page.goto('/')
   await page.getByRole('tab', { name: '模型配置', exact: true }).click()
   await expect(page.getByRole('heading', { name: '派发渠道', exact: true })).toBeVisible()
+  await expect(page.getByText('已关闭', { exact: true })).toBeVisible()
+  await page.getByLabel('开启外部派发渠道').check()
+  await expect(page.getByText('已关闭', { exact: true })).toBeVisible()
   await page.getByLabel('账号标识').fill('ops')
   await page.getByLabel('App ID').fill('cli_fixture')
   await page.getByLabel('App Secret').fill('fixture-channel-secret')
-  await page.getByRole('button', { name: '保存并启用', exact: true }).click()
-  await expect(page.getByText(/渠道已保存并设为自动派发渠道/)).toBeVisible()
+  await page.getByRole('button', { name: '保存、验证并开启', exact: true }).click()
+  await expect(page.getByText(/渠道与 Gateway 验证通过，外部派发已开启/)).toBeVisible()
+  await expect(page.getByText('已开启', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '立即重载看板', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '检测连接', exact: true }).click()
-  await expect(page.getByText('渠道连接检测通过', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '验证连接', exact: true }).click()
+  await expect(page.getByText('渠道与 Gateway 连接验证通过。', { exact: true })).toBeVisible()
   const calls = await page.evaluate(() => window.channelCalls)
   expect(calls[0].kind).toBe('save')
   expect(calls[0].payload).toMatchObject({ channel: 'feishu', accountId: 'ops', appId: 'cli_fixture', appSecret: 'fixture-channel-secret' })

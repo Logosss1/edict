@@ -83,10 +83,11 @@ export function getPipeStatus(t: Task): PipeStatus[] {
 
 export type TabKey =
   | 'edicts' | 'monitor' | 'officials' | 'models'
-  | 'skills' | 'sessions' | 'memorials' | 'templates' | 'morning' | 'court' | 'yushufang';
+  | 'skills' | 'sessions' | 'memorials' | 'templates' | 'morning' | 'court' | 'yushufang' | 'preflight';
 
 export const TAB_DEFS: { key: TabKey; label: string; icon: string }[] = [
   { key: 'edicts',    label: '旨意看板', icon: '📜' },
+  { key: 'preflight', label: '执行保障', icon: '🛡️' },
   { key: 'court',     label: '朝堂议政', icon: '🏛️' },
   { key: 'yushufang', label: '御书房',   icon: '📚' },
   { key: 'monitor',   label: '省部调度', icon: '🔌' },

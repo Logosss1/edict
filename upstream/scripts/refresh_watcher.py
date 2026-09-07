@@ -20,9 +20,13 @@ import subprocess
 import sys
 import time
 
+# Keep the code tree and mutable desktop data tree separate.  The upstream
+# installation has the same directory for both, while the desktop app uses
+# EDICT_DATA_DIR for the shared writable store.
 _BASE = pathlib.Path(os.environ.get('EDICT_HOME', '')).resolve() if os.environ.get('EDICT_HOME') else pathlib.Path(__file__).resolve().parent.parent
-SIGNAL_FILE = _BASE / 'data' / '.refresh_pending'
-PID_FILE = _BASE / 'data' / '.refresh_watcher_pid'
+_DATA_DIR = pathlib.Path(os.environ.get('EDICT_DATA_DIR', str(_BASE / 'data'))).expanduser().resolve()
+SIGNAL_FILE = _DATA_DIR / '.refresh_pending'
+PID_FILE = _DATA_DIR / '.refresh_watcher_pid'
 REFRESH_SCRIPT = _BASE / 'scripts' / 'refresh_live_data.py'
 DEBOUNCE_SEC = 2       # 信号文件稳定 2 秒后才执行
 POLL_INTERVAL = 0.5    # 检查间隔

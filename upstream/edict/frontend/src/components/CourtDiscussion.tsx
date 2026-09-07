@@ -464,7 +464,7 @@ export default function CourtDiscussion() {
   const messages = session?.messages || [];
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" aria-busy={loading}>
       {/* 顶部控制栏 */}
       <div className="flex items-center justify-between flex-wrap gap-2 bg-[var(--panel)] rounded-xl px-4 py-2 border border-[var(--line)]">
         <div className="flex items-center gap-2">
@@ -479,6 +479,7 @@ export default function CourtDiscussion() {
           )}
         </div>
         <div className="flex items-center gap-1.5">
+          {loading && <span className="async-action-status" role="status" aria-live="polite">⟳ 朝议处理中…</span>}
           <button
             onClick={() => setShowDecree(!showDecree)}
             disabled={session?.phase === 'concluded' || loading}

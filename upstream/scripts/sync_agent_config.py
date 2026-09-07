@@ -329,7 +329,9 @@ def main():
                 'isDefaultModel': True,
             })
 
-    # 保留已有的 dispatchChannel 配置 (Fix #139)
+    # 保留已有的 dispatchChannel 配置 (Fix #139)。
+    # 渠道配置和是否允许外部派发是两个不同状态：默认关闭，只有桌面端
+    # 完成渠道/Gateway 验证后才会把 dispatchChannelEnabled 写成 true。
     existing_cfg = {}
     cfg_path = DATA / 'agent_config.json'
     if cfg_path.exists():
@@ -338,11 +340,15 @@ def main():
         except Exception:
             pass
 
+    dispatch_channel = existing_cfg.get('dispatchChannel') or os.getenv('DEFAULT_DISPATCH_CHANNEL', '')
+    dispatch_enabled = existing_cfg.get('dispatchChannelEnabled') is True and bool(dispatch_channel)
+
     payload = {
         'generatedAt': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'defaultModel': default_model,
         'knownModels': merged_models,
-        'dispatchChannel': existing_cfg.get('dispatchChannel') or os.getenv('DEFAULT_DISPATCH_CHANNEL', ''),
+        'dispatchChannel': dispatch_channel,
+        'dispatchChannelEnabled': dispatch_enabled,
         'agents': result,
     }
     DATA.mkdir(exist_ok=True)
@@ -353,6 +359,8 @@ def main():
     deploy_soul_files(runtime_home)
     # 同步 scripts/ 到各 workspace（保持 kanban_update.py 等最新）
     sync_scripts_to_workspaces(runtime_home)
+    # 与原项目 install.sh 保持一致：所有 Agent 使用同一份可写数据。
+    sync_data_to_workspaces(runtime_home, DATA)
 
 
 # 项目 agents/ 目录名 → 运行时 agent_id 映射
@@ -441,6 +449,48 @@ def sync_scripts_to_workspaces(openclaw_home=None):
             pass
     if synced:
         log.info(f'{synced} script symlinks synced to workspaces')
+
+
+def _sync_data_symlink(data_root: pathlib.Path, dst_dir: pathlib.Path) -> bool:
+    """Link a workspace's mutable data directory to the canonical store.
+
+    The upstream installer creates both ``data`` and ``scripts`` links.  A
+    desktop runtime keeps the writable store outside the bundled project, so
+    reproduce that invariant without deleting an existing user directory.
+    ``kanban_update.py`` also receives EDICT_DATA_DIR, making this link a
+    compatibility aid for older skills and scripts.
+    """
+    source = data_root.expanduser().resolve()
+    dst = dst_dir.expanduser()
+    source.mkdir(parents=True, exist_ok=True)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if dst.is_symlink() and dst.resolve() == source:
+            return False
+    except OSError:
+        pass
+    if dst.exists() or dst.is_symlink():
+        # Never remove an existing directory containing user data during a
+        # routine sync. The explicit EDICT_DATA_DIR path remains authoritative.
+        return False
+    os.symlink(source, dst, target_is_directory=True)
+    return True
+
+
+def sync_data_to_workspaces(openclaw_home=None, data_dir=None):
+    """Mirror the upstream ``data → project/data`` workspace invariant."""
+    runtime_home = _runtime_openclaw_home() if openclaw_home is None else pathlib.Path(openclaw_home).expanduser()
+    data_root = pathlib.Path(data_dir or DATA).expanduser()
+    linked = 0
+    for runtime_id in [*_SOUL_DEPLOY_MAP.values(), 'main']:
+        try:
+            if _sync_data_symlink(data_root, runtime_home / f'workspace-{runtime_id}' / 'data'):
+                linked += 1
+        except OSError:
+            continue
+    if linked:
+        log.info(f'{linked} data symlinks synced to workspaces')
+    return linked
 
 
 def deploy_soul_files(openclaw_home=None):

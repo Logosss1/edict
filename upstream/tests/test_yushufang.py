@@ -680,7 +680,15 @@ def test_readiness_route_reports_actionable_checks_without_secret_values(tmp_pat
             "apiKey": {"source": "env", "provider": "default", "id": "READINESS_FIXTURE_KEY"},
             "models": [{"id": "model"}],
         }}},
-        "agents": {"defaults": {"model": "test/model"}, "list": [{"id": "alpha", "model": "test/model"}]},
+        "agents": {"defaults": {"model": "test/model"}, "list": [
+            {"id": "alpha", "model": "test/model"},
+            {"id": "libu", "model": "test/model"},
+            {"id": "hubu", "model": "test/model"},
+            {"id": "bingbu", "model": "test/model"},
+            {"id": "xingbu", "model": "test/model"},
+            {"id": "gongbu", "model": "test/model"},
+            {"id": "libu_hr", "model": "test/model"},
+        ]},
     }), encoding="utf-8")
     monkeypatch.setattr(srv, "OCLAW_HOME", openclaw_home)
     monkeypatch.setenv("READINESS_FIXTURE_KEY", "fixture-readiness-only")
@@ -690,12 +698,32 @@ def test_readiness_route_reports_actionable_checks_without_secret_values(tmp_pat
         assert status == 200
         assert result["ready"] is True
         assert all("fixture-readiness-only" not in json.dumps(item) for item in result["checks"])
+        assert result["summary"]["blockers"] == 0
+        assert {"board", "yushufang", "court", "externalDispatch"} <= set(result["routes"])
+        assert all({"severity", "scope", "action"} <= set(item) for item in result["checks"])
+        assert all(item["ready"] for item in result["routes"].values())
+        skills_check = next(item for item in result["checks"] if item["id"] == "skills")
+        mcp_check = next(item for item in result["checks"] if item["id"] == "mcp")
+        assert skills_check["action"]["target"] == "skills"
+        assert mcp_check["action"]["target"] == "mcp"
 
         monkeypatch.delenv("READINESS_FIXTURE_KEY")
         status, missing = _http_json(httpd, "GET", "/api/readiness")
         assert status == 200
         assert missing["ready"] is False
         assert next(item for item in missing["checks"] if item["id"] == "secret")["ready"] is False
+        assert missing["summary"]["blockers"] >= 1
+        secret_check = next(item for item in missing["checks"] if item["id"] == "secret")
+        assert secret_check["action"]["type"] == "settings"
+
+        status, invalid_repair = _http_json(
+            httpd,
+            "POST",
+            "/api/preflight/repair",
+            {"action": "run-arbitrary-command"},
+        )
+        assert status == 400
+        assert invalid_repair["ok"] is False
     finally:
         httpd.shutdown()
         httpd.server_close()

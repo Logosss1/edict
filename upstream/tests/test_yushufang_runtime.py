@@ -1,12 +1,13 @@
 """The discussion runtime must never inherit ordinary execution permissions."""
 import json
+import os
 import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "dashboard"))
 sys.path.insert(0, str(ROOT / "scripts"))
-from yushufang_runtime import prepare_runtime, resolve_thinking, DENIED_TOOLS
+from yushufang_runtime import prepare_local_dispatch_runtime, prepare_runtime, resolve_thinking, DENIED_TOOLS
 import pytest
 
 
@@ -145,6 +146,31 @@ def test_existing_env_secret_ref_is_materialized_to_child_env_marker(tmp_path):
     assert child_config["models"]["providers"]["test"]["apiKey"] == "OPENAI_API_KEY"
     assert env["OPENAI_API_KEY"] == "fixture-env-secret"
     assert "PARENT_PROVIDER_KEY" not in json.dumps(child_config)
+
+
+def test_local_dispatch_runtime_keeps_agent_policy_but_avoids_gateway_secret_resolution(tmp_path):
+    source = source_config(tmp_path)
+    config = json.loads(source.read_text())
+    config["models"]["providers"]["test"]["apiKey"] = {
+        "source": "env", "provider": "default", "id": "PARENT_PROVIDER_KEY"
+    }
+    source.write_text(json.dumps(config), encoding="utf-8")
+
+    child_config, env, summary = prepare_local_dispatch_runtime(
+        tmp_path / "dispatch" / "alpha",
+        "alpha",
+        source,
+        base_environment={"PARENT_PROVIDER_KEY": "fixture-local-secret"},
+    )
+
+    assert summary["model"] == "test/model"
+    assert child_config["agents"]["list"][0]["workspace"] == str(tmp_path / "ordinary-workspace")
+    assert child_config["models"]["mode"] == "replace"
+    assert list(child_config["models"]["providers"]) == ["test"]
+    assert child_config["models"]["providers"]["test"]["apiKey"] == "OPENAI_API_KEY"
+    assert env["OPENAI_API_KEY"] == "fixture-local-secret"
+    assert "fixture-local-secret" not in (tmp_path / "dispatch" / "alpha" / "openclaw.json").read_text()
+    assert env["OPENCLAW_CONFIG_PATH"].endswith("/dispatch/alpha/openclaw.json")
 
 
 def test_existing_env_secret_ref_without_injected_value_is_actionable(tmp_path):

@@ -55,6 +55,44 @@ interface EdictDesktopChannelProbeResult {
   raw?: unknown
 }
 
+interface EdictDesktopGatewayProbeResult {
+  ok: boolean
+  message: string
+}
+
+interface EdictDesktopWorkspaceAccessCheck {
+  ok: boolean
+  path: string
+  readable?: boolean
+  writable?: boolean
+  traversable?: boolean
+  probePassed?: boolean
+  needsSystemPermission?: boolean
+  detail: string
+}
+
+interface EdictDesktopWorkspaceProject {
+  id: string
+  name: string
+  path: string
+  createdAt?: string
+  updatedAt?: string
+}
+
+interface EdictDesktopWorkspace {
+  id: string
+  name: string
+  path: string
+  projectPath: string | null
+  projects: EdictDesktopWorkspaceProject[]
+}
+
+interface EdictDesktopWorkspaceState {
+  activeWorkspaceId: string | null
+  activeWorkspace: EdictDesktopWorkspace | null
+  workspaces: EdictDesktopWorkspace[]
+}
+
 interface Window {
   edictDesktop?: {
     listProviders: () => Promise<EdictDesktopProviderSummary[]>
@@ -66,7 +104,16 @@ interface Window {
     saveChannelAccount?: (payload: Record<string, unknown>) => Promise<{ ok: boolean; requiresReload?: boolean; account?: EdictDesktopChannelSummary; error?: string }>
     removeChannelAccount?: (payload: { channel: string; accountId: string }) => Promise<{ ok: boolean; requiresReload?: boolean }>
     probeChannelAccount?: (payload: { channel: string; accountId: string }) => Promise<EdictDesktopChannelProbeResult>
+    probeGateway?: () => Promise<EdictDesktopGatewayProbeResult>
     reloadDashboard?: () => Promise<unknown>
     openSettings?: (tab?: string) => Promise<unknown>
+    openMonitor?: () => Promise<unknown>
+    getWorkspaceState?: () => Promise<EdictDesktopWorkspaceState>
+    chooseWorkspace?: (mode?: 'create' | 'existing') => Promise<unknown>
+    activateWorkspace?: (id: string) => Promise<unknown>
+    chooseProject?: () => Promise<unknown>
+    useWorkspaceAsProject?: () => Promise<unknown>
+    checkWorkspaceAccess?: (path?: string) => Promise<EdictDesktopWorkspaceAccessCheck>
+    openWorkspacePermissions?: () => Promise<{ ok: boolean; message?: string }>
   }
 }

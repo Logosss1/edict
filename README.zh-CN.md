@@ -29,8 +29,10 @@ Edict_InnerCourt 是 [EDICT](https://github.com/cft0808/edict) 的 macOS 桌面�
 这不是另起炉灶重写一个 Multi-Agent 框架，而是对原有核心进行桌面化包装和使用流程完善，重点补上新电脑分发和日常操作所需要的能力：
 
 - 提供内置 Node.js、Python、OpenClaw 的可分发 Electron 应用；
+- 提供工作区优先的桌面工作台：先创建/选择工作区目录，再绑定项目目录，完成后才能开始工作；
 - 在软件内完成供应商、模型、Agent、运行时和派发渠道的首次配置；
 - 提供持久化、同一时间只允许一场的御书房，并能查看既有 Agent 的实时工作进度；
+- 内置三省六部工作流 Skills，以及按工作区自动启用的本地工作区/记忆 MCP，不需要再填 API Key；
 - 为已结束的记录提供删除和附件/临时运行数据清理；
 - 隔离本地数据，保护凭据，提供运行诊断和持续版本说明。
 
@@ -51,12 +53,13 @@ Edict_InnerCourt 是 [EDICT](https://github.com/cft0808/edict) 的 macOS 桌面�
 | 方面 | 原始 EDICT | Edict_InnerCourt |
 | --- | --- | --- |
 | 分发方式 | 克隆仓库后，在电脑上准备 OpenClaw、Python、Node.js。 | 下载内置运行时的 macOS ZIP。 |
+| 工作边界 | 通过本地脚本和约定分别准备仓库与 OpenClaw 工作区。 | 软件强制先选择工作区和项目，再进入工作台；每个工作区使用独立的本地 EDICT 运行数据。 |
 | 首次安装 | 通过 shell 脚本和 OpenClaw 命令创建工作区、注册 Agent、同步数据、重启服务。 | 通过软件内的就绪检查和设置流程完成；首次启动自动创建隔离运行数据。 |
 | 供应商和模型 | 作为本地 OpenClaw 环境的一部分配置凭据和模型文件。 | 在设置页配置供应商、密钥、模型发现、Agent 绑定和思考深度。 |
 | 派发渠道 | 在桌面界面之外配置 OpenClaw 渠道组件和账号字段。 | 在“派发渠道”里配置飞书、Telegram、Discord、Slack、Signal。 |
 | 御书房 | 以仓库/看板流程为主，没有打包后的 macOS 单场实时议事边界。 | 同一时间只允许一场未结束议事；新房间复用 Agent 规范主会话，可只读询问实时进度。 |
 | 历史管理 | 桌面版增加统一的记录删除入口。 | 御书房、朝堂议事、任务、奏折、会话和详情页的终态记录可确认删除并清理相关数据。 |
-| 运行安全 | 原项目提供核心编排逻辑和脚本。 | 在外围增加安全模式、隔离数据、安全密钥、附件隔离、运行诊断和桌面启动管理。 |
+| 运行安全 | 原项目提供核心编排逻辑和脚本。 | 在外围增加隔离数据、安全密钥、附件隔离、运行诊断、可取消派发和桌面启动管理。 |
 
 ## 三省六部核心工作流
 
@@ -90,6 +93,7 @@ Edict_InnerCourt 是 [EDICT](https://github.com/cft0808/edict) 的 macOS 桌面�
 | 功能区 | 能做什么 |
 | --- | --- |
 | **旨意看板** | 查看旨意状态、部门归属、进度、重试、暂停、取消和最终回奏。 |
+| **桌面工作台** | 从明确的工作区和项目开始，在软件内直接下达正式旨意，并持续看到当前项目上下文；原有任务流不变。 |
 | **省部调度** | 查看 Agent 健康度、活动、任务数量和运行观察。 |
 | **模型与供应商** | 配置 OpenAI 兼容接口、发现或定义模型、按 Agent 绑定模型、选择支持的思考深度。 |
 | **派发渠道** | 配置命名的飞书、Telegram、Discord、Slack、Signal 账号；首次保存时安装组件，支持检测、移除和重载。 |
@@ -98,6 +102,7 @@ Edict_InnerCourt 是 [EDICT](https://github.com/cft0808/edict) 的 macOS 桌面�
 | **奏折阁与会话** | 查看已完成工作、任务历史、会话详情和终态记录；不再需要时确认删除。 |
 | **附件能力** | 选择、粘贴、拖放、上传、重试和下载文件，并按房间隔离和限制大小。 |
 | **Skills 与 Agent 角色** | 保留原项目 Agent 角色与 Skills 模型，让打包后的看板和运行时继续使用。 |
+| **内置能力** | 首次进入工作区时自动安装分拣、规划、审议、工程、文书 Skills，以及工作区文件读/搜和项目记忆 MCP；不覆盖用户配置。 |
 
 ## 桌面版架构
 
@@ -135,12 +140,16 @@ Edict_InnerCourt 是 [EDICT](https://github.com/cft0808/edict) 的 macOS 桌面�
 
 打开 [GitHub Releases](https://github.com/Logosss1/Edict_InnerCourt/releases/latest)：
 
-- Apple Silicon（M 系列）下载 `Edict_InnerCourt-0.2.1-arm64-mac.zip`；
-- Intel Mac 下载 `Edict_InnerCourt-0.2.1-mac.zip`。
+- Apple Silicon（M 系列）下载 `Edict_InnerCourt-0.3.1-arm64-mac.zip`；
+- Intel Mac 下载 `Edict_InnerCourt-0.3.1-mac.zip`。
 
 解压后打开 `Edict_InnerCourt.app`。
 
-### 2. 在软件内完成配置
+### 2. 选择工作区和项目
+
+首次打开时，先创建或选择一个工作区文件夹，再选择本次任务要操作的项目文件夹。两者都完成后才能进入工作台。切换工作区会使用独立的本地 EDICT 运行边界；新建任务会记录当前项目，并把项目上下文传给派发的 Agent。
+
+### 3. 在软件内完成配置
 
 进入“设置”：
 
@@ -152,9 +161,9 @@ Edict_InnerCourt 是 [EDICT](https://github.com/cft0808/edict) 的 macOS 桌面�
 
 平台侧的工作仍需在外部完成：创建飞书应用或机器人、开通权限、启用 WebSocket/Socket Mode，以及复制平台生成的凭据。桌面软件无法替用户在第三方平台注册账号。
 
-### 3. 下旨
+### 4. 下旨
 
-配置就绪后，按原有 EDICT 流程使用：
+配置就绪后，在“运行 → 向太子下旨”中直接提交正式任务，也可以使用已配置的外部渠道。原有 EDICT 流程仍然是：
 
 ```text
 用户下旨 → 太子分拣 → 中书省规划
@@ -162,7 +171,7 @@ Edict_InnerCourt 是 [EDICT](https://github.com/cft0808/edict) 的 macOS 桌面�
         → 六部执行 → 回奏与审计记录
 ```
 
-新安装默认处于安全模式。确认供应商、模型、Agent 和渠道无误后，再按需要开启自动执行。
+配置好供应商和模型后，桌面版默认会自动派发任务。未选择外部渠道时，直接使用软件内置的 OpenClaw 本地执行，不需要另行启动 Gateway；选择飞书、Telegram、Discord、Slack 或 Signal 后，则使用已配置的 OpenClaw Gateway。可在“设置 → 运行时”暂停自动派发。
 
 ## 御书房使用流程
 
@@ -198,7 +207,23 @@ Edict_InnerCourt 是 [EDICT](https://github.com/cft0808/edict) 的 macOS 桌面�
 - **附件隔离：** 上传文件按房间和消息隔离，终态记录删除时安全清理。
 - **失败恢复：** 部分回合会保留已经成功的回复，暂停未完成队列并显示真实错误，重试时不静默重复已完成工作。
 - **模型能力感知：** 界面根据模型能力显示思考深度，避免盲目发送供应商不支持的参数。
-- **首次启动安全模式：** 演示数据不会自动变成真实外部派发，必须由用户在配置完成后明确开启执行。
+- **桌面自动执行：** 配好供应商和模型后，任务会自动离开太子队列；无外部渠道时走内置本地模式，外部渠道仍走 Gateway 投递。
+- **真实叫停：** 叫停和取消会原子更新任务状态，并在有后台派发进程时实际终止它；迟到的进程输出不能把已取消任务恢复。
+- **内置能力：** 首次进入工作区时幂等安装工作流 Skills 和工作区级 MCP，不包含供应商密钥或网络凭据。
+
+## 开源参考与改造边界
+
+Edict_InnerCourt 参考了几个成熟的开源项目，但始终以 EDICT 的三省六部编排为唯一核心：
+
+| 参考项目 | 借鉴重点 | 在 Edict_InnerCourt 中的实现 |
+| --- | --- | --- |
+| [OpenHands](https://github.com/OpenHands/OpenHands) | 工作区边界、执行过程可见，以及控制中心与执行环境分离。 | 软件要求先选择工作区/项目，并在执行详情中显示当前 Agent、项目范围、Git 变更、产出、测试和最近活动。 |
+| [LobeHub](https://github.com/lobehub/lobehub) | 以工作台为中心，把运行、历史、设置和 Agent 运营分层。 | 桌面左侧分为“运行、执行保障、档案、Skills & MCP、执行监控、设置”；御书房仍是工作流页面，不另造第二套任务系统。 |
+| [shadcn/ui](https://github.com/shadcn-ui/ui) | 可组合组件、本地拥有样式，以及不依赖黑盒主题的设计 token。 | 看板使用本地 CSS token 和可复用状态模式，不增加 shadcn 生成器或新的运行时依赖。 |
+| [Radix Primitives](https://github.com/radix-ui/primitives) | 语义化控件、受保护操作、焦点管理，以及明确的加载/成功/失败状态。 | 叫停、暂停、恢复、删除和审批都有真实状态变化、确认路径和可见的异步反馈。 |
+| [Ant Design](https://github.com/ant-design/ant-design) | 运维型密集信息、筛选、状态色和稳定的操作区。 | 旨意看板和执行监控保留紧凑卡片、活跃/归档/全部筛选、六部体检和阻塞详情，同时保持 EDICT 的视觉语言。 |
+
+这些项目是实现参考，不是替换框架。具体的逐项目范围、预期结果、代码落点和暂缓名额见 [`OPEN_SOURCE_ADOPTION_PLAN.md`](OPEN_SOURCE_ADOPTION_PLAN.md)。三省六部核心工作流不变。
 
 ## 常见问题与排查
 
@@ -221,6 +246,10 @@ Edict_InnerCourt 是 [EDICT](https://github.com/cft0808/edict) 的 macOS 桌面�
 ### 渠道保存成功但收不到消息
 
 点击“检测连接”，检查第三方平台权限、WebSocket/Socket Mode 设置；修改渠道密钥后使用“立即重载看板”。软件能配置支持的渠道账号，但不能替你修复外部平台权限。
+
+### 下旨后一直停在“太子·分拣”
+
+桌面版中这应当只是短暂的交接状态。进入“设置 → 运行时”，确认自动派发已开启，再检查供应商和 Agent 模型是否就绪。如果本地运行无法启动，任务会进入“阻塞”并显示实际原因，修正配置后可以恢复执行；如果使用外部渠道，还需要 OpenClaw Gateway 正常运行。
 
 ### 为什么不能再打开第二场御书房
 
@@ -262,6 +291,7 @@ Edict_InnerCourt/
 ├── desktop/
 │   ├── electron/             # Electron 主进程、preload、安全存储、生命周期
 │   ├── main/                 # 运行时发现与 OpenClaw 集成
+│   ├── builtin/               # 内置工作流 Skills 与本地 MCP 服务
 │   ├── e2e/                  # 打包版与看板冒烟测试
 │   ├── tests/                # TypeScript 集成/单元测试
 │   ├── settings/             # 独立桌面设置窗口
@@ -281,6 +311,8 @@ Edict_InnerCourt/
 ├── README.md                # 默认英文说明
 └── README.zh-CN.md          # 中文说明
 ```
+
+`upstream/` 是仓库内部的目录命名选择，里面放的是本桌面版打包使用的 EDICT 衍生核心。GitHub 并不要求必须有这个目录，fork 项目也不要求保留名为 `upstream` 的远程仓库。理论上可以改名，但需要同步修改桌面打包过滤、运行时路径、看板导入和测试；在核心仍以原始 EDICT 为基础的阶段，保留这个目录是风险更小的做法。
 
 ## 安全、支持与归属
 

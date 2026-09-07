@@ -4,6 +4,9 @@ const $ = (selector) => document.querySelector(selector)
 const els = {
   tabs: [...document.querySelectorAll('[data-tab]')],
   panels: [...document.querySelectorAll('.tab-panel')],
+  settingsSearch: $('#settings-search'), settingsSearchEmpty: $('#settings-search-empty'),
+  generalStatus: $('#general-status'), generalWorkspace: $('#general-workspace'), generalProject: $('#general-project'),
+  aboutStatus: $('#about-status'), aboutVersion: $('#about-version'), aboutRuntime: $('#about-runtime'), aboutData: $('#about-data'),
   list: $('#provider-list'), empty: $('#empty-providers'), form: $('#provider-form'),
   title: $('#editor-title'), status: $('#provider-status'), id: $('#provider-id'), idPreview: $('#provider-id-preview'),
   name: $('#provider-name'), type: $('#provider-type'), url: $('#provider-url'), key: $('#provider-key'), keyHint: $('#key-hint'),
@@ -14,12 +17,14 @@ const els = {
   agentProvider: $('#agent-provider'), agentModel: $('#agent-model'), agentBinding: $('#agent-binding'), agentThinking: $('#agent-thinking'), agentToolProfile: $('#agent-tool-profile'),
   agentSkills: $('#agent-skills'), agentAllowAgents: $('#agent-allow-agents'), agentSandboxMode: $('#agent-sandbox-mode'), agentWorkspaceAccess: $('#agent-workspace-access'),
   agentError: $('#agent-form-error'), agentSuccess: $('#agent-form-success'), skillName: $('#skill-name'), skillTrigger: $('#skill-trigger'), skillDescription: $('#skill-description'),
+  skillAgent: $('#skill-agent'), skillTargetAgent: $('#skill-target-agent'), skillCount: $('#skill-count'), skillSummary: $('#skill-summary'), skillList: $('#skill-list'),
+  skillStatus: $('#skills-status'), skillError: $('#skill-error'), skillSuccess: $('#skill-success'), skillForm: $('#skill-form'),
   globalProvider: $('#global-provider'), globalModel: $('#global-model'), globalThinking: $('#global-thinking'), globalToolProfile: $('#global-tool-profile'),
   networkSearch: $('#network-search'), networkFetch: $('#network-fetch'), autoDispatch: $('#auto-dispatch'), gatewayRestart: $('#gateway-restart'), runtimeStatus: $('#runtime-status'),
   runtimeError: $('#runtime-error'), runtimeSuccess: $('#runtime-success'),
   mcpList: $('#mcp-list'), emptyMcp: $('#empty-mcp'), mcpCount: $('#mcp-count'), mcpTitle: $('#mcp-title'), mcpStatus: $('#mcp-status'), mcpForm: $('#mcp-form'),
   mcpName: $('#mcp-name'), mcpTransport: $('#mcp-transport'), mcpJson: $('#mcp-json'), mcpError: $('#mcp-error'), mcpSuccess: $('#mcp-success'), removeMcp: $('#remove-mcp'),
-  opsSummary: $('#ops-summary'), opsErrors: $('#ops-errors'), opsTasks: $('#ops-tasks'), opsJson: $('#ops-json'), reloadDashboard: $('#reload-dashboard'),
+  opsSummary: $('#ops-summary'), opsErrors: $('#ops-errors'), opsCopyStatus: $('#ops-copy-status'), opsTasks: $('#ops-tasks'), opsJson: $('#ops-json'), copyOpsJson: $('#copy-ops-json'), reloadDashboard: $('#reload-dashboard'),
 }
 
 let providers = []
@@ -29,6 +34,7 @@ let configSnapshot = null
 let selectedAgentId = ''
 let selectedMcpName = ''
 let lastDiagnostics = null
+let runtimeOptionsDirty = false
 let modelCapabilities = []
 let capabilityAgents = []
 let capabilityError = ''
@@ -87,13 +93,31 @@ function switchTab(name) {
   els.panels.forEach((panel) => { panel.hidden = panel.id !== `tab-${name}` })
   if (name === 'agents') void loadAgents()
   if (name === 'runtime') void loadConfig()
+  if (name === 'skills') void loadAgents()
   if (name === 'mcp') void loadConfig()
   if (name === 'ops') void loadOps()
   if (name === 'dependencies') void checkDependencies()
+  if (name === 'general') void loadGeneral()
+  if (name === 'about') void loadAbout()
+}
+
+function filterSettingsTabs() {
+  const query = String(els.settingsSearch?.value || '').trim().toLocaleLowerCase()
+  let matches = 0
+  els.tabs.forEach((tab) => {
+    const haystack = `${tab.textContent || ''} ${tab.dataset.search || ''}`.toLocaleLowerCase()
+    const match = !query || haystack.includes(query)
+    tab.hidden = !match
+    if (match) matches += 1
+  })
+  if (els.settingsSearchEmpty) els.settingsSearchEmpty.hidden = matches > 0
 }
 
 els.tabs.forEach((tab) => tab.addEventListener('click', () => switchTab(tab.dataset.tab)))
-api.onSettingsTab?.(tab => { if (tab === 'dependencies') switchTab(tab) })
+els.settingsSearch?.addEventListener('input', filterSettingsTabs)
+api.onSettingsTab?.(tab => {
+  if (['general', 'providers', 'agents', 'runtime', 'dependencies', 'skills', 'mcp', 'ops', 'about'].includes(tab)) switchTab(tab)
+})
 
 let dependenciesBusy = false
 let dependenciesLoaded = false
@@ -391,6 +415,42 @@ function renderAgentList() {
   els.agentList.querySelectorAll('[data-agent-id]').forEach((button) => button.addEventListener('click', () => { selectedAgentId = button.dataset.agentId; fillAgent(); renderAgentList() }))
 }
 
+function skillsForAgent(agentId) {
+  const binding = bindingRecord(agentId)
+  const config = configAgent(agentId)
+  const configured = Array.isArray(config?.skills) ? config.skills : (Array.isArray(binding?.skills) ? binding.skills : [])
+  return configured.map((skill) => typeof skill === 'string' ? { name: skill } : skill).filter((skill) => skill?.name)
+}
+
+function populateSkillAgentSelects() {
+  const currentView = els.skillAgent?.value || selectedAgentId
+  const currentTarget = els.skillTargetAgent?.value || selectedAgentId
+  const options = agentBindings.length
+    ? agentBindings.map((binding) => `<option value="${escapeHtml(binding.agentId)}">${escapeHtml(binding.label || binding.agentId)}</option>`).join('')
+    : '<option value="">暂无 Agent</option>'
+  if (els.skillAgent) {
+    els.skillAgent.innerHTML = options
+    if (agentBindings.some((binding) => binding.agentId === currentView)) els.skillAgent.value = currentView
+  }
+  if (els.skillTargetAgent) {
+    els.skillTargetAgent.innerHTML = options
+    if (agentBindings.some((binding) => binding.agentId === currentTarget)) els.skillTargetAgent.value = currentTarget
+  }
+}
+
+function renderSkillWorkspace() {
+  if (!els.skillList || !els.skillCount || !els.skillSummary) return
+  const agentId = els.skillAgent?.value || selectedAgentId
+  const binding = bindingRecord(agentId)
+  const skills = skillsForAgent(agentId)
+  els.skillCount.textContent = `${skills.length} 个`
+  els.skillSummary.textContent = binding ? `${binding.label || agentId} 的显式技能配置` : '选择 Agent 后查看。'
+  els.skillList.innerHTML = skills.length
+    ? skills.map((skill) => `<div class="skill-row"><strong>${escapeHtml(skill.name)}</strong><span>${escapeHtml(skill.description || '已配置')}</span></div>`).join('')
+    : '<div class="empty-state">该 Agent 暂无显式 Skill；留空表示使用工作区默认能力。</div>'
+  if (els.skillStatus) setStatus(els.skillStatus, binding ? 'ok' : 'neutral', binding ? '已读取' : '未选择')
+}
+
 function fillAgent() {
   const binding = bindingRecord(selectedAgentId); const config = configAgent(selectedAgentId)
   if (!binding) { els.agentTitle.textContent = '选择 Agent'; setStatus(els.agentStatus, 'neutral', '未选择'); return }
@@ -412,7 +472,7 @@ async function loadAgents() {
     const [bindings, snapshot] = await Promise.all([api.getAgentBindings(), api.getOpenClawSnapshot(), loadModelCapabilities()])
     agentBindings = bindings?.agents || []; configSnapshot = snapshot || null
     if (!selectedAgentId || !bindingRecord(selectedAgentId)) selectedAgentId = agentBindings[0]?.agentId || ''
-    renderAgentList(); fillAgent(); populateProviderSelect(els.agentProvider, els.agentProvider?.value)
+    renderAgentList(); fillAgent(); populateProviderSelect(els.agentProvider, els.agentProvider?.value); populateSkillAgentSelects(); renderSkillWorkspace()
   } catch (error) { els.agentCount.textContent = errorText(error); setStatus(els.agentStatus, 'error', '读取失败') }
 }
 
@@ -450,12 +510,22 @@ $('#save-agent-policy').addEventListener('click', async () => {
     await loadAgents()
   } catch (error) { els.agentError.textContent = errorText(error) }
 })
-$('#add-skill').addEventListener('click', async () => {
-  if (!selectedAgentId || !els.skillName.value.trim()) { els.agentError.textContent = '请先选择 Agent 并填写 Skill 名称。'; return }
+els.skillAgent?.addEventListener('change', renderSkillWorkspace)
+els.skillForm?.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  const agentId = els.skillTargetAgent?.value || selectedAgentId
+  if (!agentId || !els.skillName.value.trim()) { els.skillError.textContent = '请先选择目标 Agent 并填写 Skill 名称。'; return }
+  const button = $('#add-skill')
+  button.disabled = true
+  button.textContent = '添加中…'
+  els.skillError.textContent = ''; els.skillSuccess.textContent = ''
   try {
-    const result = await api.dashboardApi({ path: '/api/add-skill', method: 'POST', body: { agentId: selectedAgentId, skillName: els.skillName.value.trim(), description: els.skillDescription.value.trim(), trigger: els.skillTrigger.value.trim() } })
-    els.agentError.textContent = ''; els.agentSuccess.textContent = result?.message || 'Skill 已添加到 Agent 工作区。'; els.skillName.value = ''; els.skillDescription.value = ''; els.skillTrigger.value = ''; await loadAgents()
-  } catch (error) { els.agentError.textContent = errorText(error) }
+    const result = await api.dashboardApi({ path: '/api/add-skill', method: 'POST', body: { agentId, skillName: els.skillName.value.trim(), description: els.skillDescription.value.trim(), trigger: els.skillTrigger.value.trim() } })
+    els.skillSuccess.textContent = result?.message || 'Skill 已添加到 Agent 工作区。'
+    els.skillName.value = ''; els.skillDescription.value = ''; els.skillTrigger.value = ''
+    await loadAgents()
+  } catch (error) { els.skillError.textContent = errorText(error) }
+  finally { button.disabled = false; button.textContent = '添加 Skill' }
 })
 
 function modelParts(model) {
@@ -476,7 +546,10 @@ async function loadConfig() {
     els.globalToolProfile.value = configSnapshot?.defaultToolProfile || ''
     els.networkSearch.checked = configSnapshot?.network?.search?.enabled !== false
     els.networkFetch.checked = configSnapshot?.network?.fetch?.enabled !== false
-    if (lastDiagnostics) { els.autoDispatch.checked = Boolean(lastDiagnostics.autoDispatchEnabled); els.gatewayRestart.checked = lastDiagnostics.gatewayRestartEnabled === true }
+    if (lastDiagnostics && !runtimeOptionsDirty) {
+      els.autoDispatch.checked = Boolean(lastDiagnostics.autoDispatchEnabled)
+      els.gatewayRestart.checked = lastDiagnostics.gatewayRestartEnabled === true
+    }
     setStatus(els.runtimeStatus, 'ok', '已读取')
   } catch (error) { setStatus(els.runtimeStatus, 'error', '读取失败'); els.runtimeError.textContent = errorText(error) }
 }
@@ -484,13 +557,18 @@ async function loadConfig() {
 $('#runtime-form').addEventListener('submit', async (event) => {
   event.preventDefault(); els.runtimeError.textContent = ''; els.runtimeSuccess.textContent = ''
   if (!els.globalThinking.reportValidity()) { els.runtimeError.textContent = els.globalThinking.validationMessage; return }
+  // Snapshot the toggles before any awaited config write. The diagnostics poll
+  // runs every few seconds; without a dirty guard it could overwrite a user's
+  // unchecked value while patchGlobal is in flight and silently save `true`.
+  const runtimeOptions = { autoDispatch: els.autoDispatch.checked, allowGatewayRestart: els.gatewayRestart.checked }
   try {
     const patch = { webSearchEnabled: els.networkSearch.checked, webFetchEnabled: els.networkFetch.checked }
     if (els.globalModel.value && els.globalProvider.value) patch.defaultModel = `${els.globalProvider.value}/${els.globalModel.value}`
     if (els.globalThinking.value) patch.defaultThinking = els.globalThinking.value
     if (els.globalToolProfile.value) patch.defaultToolProfile = els.globalToolProfile.value
     await api.patchGlobal(patch)
-    if (api.setRuntimeOptions) await api.setRuntimeOptions({ autoDispatch: els.autoDispatch.checked, allowGatewayRestart: els.gatewayRestart.checked })
+    if (api.setRuntimeOptions) await api.setRuntimeOptions(runtimeOptions)
+    runtimeOptionsDirty = false
     els.runtimeSuccess.textContent = '运行策略已保存；如需让看板读取新的供应商环境，请确认任务安全后手动重载。'; await loadConfig(); await loadDiagnostics()
   } catch (error) { els.runtimeError.textContent = errorText(error) }
 })
@@ -535,10 +613,25 @@ function renderOps(snapshot) {
   els.opsTasks.innerHTML = active.length ? active.map((task) => {
     const activity = snapshot.taskActivities?.[task.id]; const scheduler = snapshot.schedulerStates?.[task.id]
     const stalled = scheduler && typeof scheduler.stalledSec === 'number' ? `停滞 ${scheduler.stalledSec}s` : ''
-    return `<article class="task-row"><div class="task-row-main"><strong>${escapeHtml(task.title || task.id)}</strong><span>${escapeHtml(task.id)} · ${escapeHtml(task.org || '')} · ${escapeHtml(task.state || '')}</span><small>${escapeHtml(task.now || task.block || '暂无最新活动')} ${escapeHtml(stalled)}</small></div><div class="task-row-meta"><span>${Array.isArray(activity?.activity) ? activity.activity.length : 0} 活动</span><button class="mini-action" data-task-action="stop" data-task-id="${escapeHtml(task.id)}" type="button">暂停</button><button class="mini-action" data-task-action="cancel" data-task-id="${escapeHtml(task.id)}" type="button">取消</button></div></article>`
+    const canStop = !['Done', 'Blocked', 'Cancelled'].includes(task.state)
+    const canCancel = !['Done', 'Cancelled'].includes(task.state)
+    return `<article class="task-row"><div class="task-row-main"><strong>${escapeHtml(task.title || task.id)}</strong><span>${escapeHtml(task.id)} · ${escapeHtml(task.org || '')} · ${escapeHtml(task.state || '')}</span><small>${escapeHtml(task.now || task.block || '暂无最新活动')} ${escapeHtml(stalled)}</small></div><div class="task-row-meta"><span>${Array.isArray(activity?.activity) ? activity.activity.length : 0} 活动</span>${canStop ? `<button class="mini-action" data-task-action="stop" data-task-id="${escapeHtml(task.id)}" type="button">暂停</button>` : ''}${canCancel ? `<button class="mini-action" data-task-action="cancel" data-task-id="${escapeHtml(task.id)}" type="button">取消</button>` : ''}</div></article>`
   }).join('') : '<div class="empty-state">没有正在执行的任务</div>'
   els.opsTasks.querySelectorAll('[data-task-action]').forEach((button) => button.addEventListener('click', async () => {
-    try { await api.dashboardApi({ path: '/api/task-action', method: 'POST', body: { taskId: button.dataset.taskId, action: button.dataset.taskAction, reason: 'Edict 桌面诊断面板操作' } }); await loadOps() } catch (error) { els.opsErrors.textContent = errorText(error) }
+    if (button.disabled) return
+    button.disabled = true
+    const originalText = button.textContent
+    button.textContent = '处理中…'
+    try {
+      const result = await api.dashboardApi({ path: '/api/task-action', method: 'POST', body: { taskId: button.dataset.taskId, action: button.dataset.taskAction, reason: 'Edict 桌面诊断面板操作' } })
+      if (!result?.ok) throw new Error(result?.error || '任务操作未执行')
+      await loadOps()
+      els.opsErrors.textContent = result.message || '任务操作已执行'
+    } catch (error) {
+      button.disabled = false
+      button.textContent = originalText
+      els.opsErrors.textContent = errorText(error)
+    }
   }))
   els.opsJson.textContent = JSON.stringify({ checkedAt: snapshot?.checkedAt, runtime: snapshot?.runtime, currentTask: snapshot?.currentTask, errors: snapshot?.errors }, null, 2)
 }
@@ -547,16 +640,88 @@ async function loadOps() {
   try { renderOps(await api.getObservability({ maxTrackedTasks: 8, includeOutputs: false })) } catch (error) { els.opsErrors.textContent = errorText(error) }
 }
 
+els.copyOpsJson?.addEventListener('click', async () => {
+  const text = els.opsJson?.textContent || '{}'
+  els.copyOpsJson.disabled = true
+  els.opsCopyStatus.textContent = ''
+  try {
+    let copied = false
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+        copied = true
+      }
+    } catch {
+      // Chromium may expose navigator.clipboard while denying this file page.
+      // Continue to the legacy selection path instead of reporting a false dead end.
+    }
+    if (!copied) {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      copied = document.execCommand('copy')
+      textarea.remove()
+    }
+    if (!copied) throw new Error('系统剪贴板不可用')
+    els.opsCopyStatus.textContent = '诊断 JSON 已复制到剪贴板。'
+  } catch (error) {
+    els.opsCopyStatus.textContent = `复制失败：${errorText(error)}`
+  } finally {
+    els.copyOpsJson.disabled = false
+  }
+})
+
+function renderSettingsOverview(snapshot = {}) {
+  const workspace = snapshot.workspace || {}
+  const dependencies = snapshot.runtimeDependencies || {}
+  const workspaceName = workspace.name || workspace.path || '未选择工作区'
+  const projectPath = workspace.projectPath || (Array.isArray(workspace.projects) ? workspace.projects[0]?.path : '') || '未选择项目'
+  if (els.generalWorkspace) els.generalWorkspace.textContent = workspaceName
+  if (els.generalProject) els.generalProject.textContent = projectPath
+  if (els.generalStatus) setStatus(els.generalStatus, snapshot.startupState === 'ready' ? 'ok' : 'neutral', snapshot.startupState === 'ready' ? '运行正常' : (snapshot.startupState || '未就绪'))
+  if (els.aboutVersion) els.aboutVersion.textContent = snapshot.version || '开发构建'
+  if (els.aboutRuntime) els.aboutRuntime.textContent = [
+    dependencies.openclawPath ? `OpenClaw · ${dependencies.openclawPath}` : 'OpenClaw · 自动检测',
+    dependencies.nodePath ? `Node.js · ${dependencies.nodePath}` : 'Node.js · 自动检测',
+  ].join('；')
+  if (els.aboutData) els.aboutData.textContent = snapshot.dataDirectory || snapshot.userData || '当前用户数据目录'
+  if (els.aboutStatus) setStatus(els.aboutStatus, snapshot.startupState === 'ready' ? 'ok' : 'neutral', snapshot.version ? '已读取' : '运行中')
+}
+
+async function loadGeneral() {
+  if (!lastDiagnostics) {
+    try { lastDiagnostics = await api.getDiagnostics() } catch { lastDiagnostics = {} }
+  }
+  renderSettingsOverview(lastDiagnostics)
+}
+
+async function loadAbout() {
+  if (!lastDiagnostics) {
+    try { lastDiagnostics = await api.getDiagnostics() } catch { lastDiagnostics = {} }
+  }
+  renderSettingsOverview(lastDiagnostics)
+}
+
 async function loadDiagnostics() {
   try {
     lastDiagnostics = await api.getDiagnostics()
+    renderSettingsOverview(lastDiagnostics)
     els.diagnostics.textContent = `看板 ${lastDiagnostics.dashboardRunning ? '运行中' : '未运行'} · Python PID ${lastDiagnostics.dashboardPid || '—'} · ${lastDiagnostics.dashboardUrl || '尚未分配地址'} · OpenClaw ${lastDiagnostics.openclawConfig || '未配置'}`
     els.reloadDashboard.hidden = !lastDiagnostics.dashboardReloadRequired
-    if (document.querySelector('#tab-runtime').hidden === false) { els.autoDispatch.checked = Boolean(lastDiagnostics.autoDispatchEnabled); els.gatewayRestart.checked = lastDiagnostics.gatewayRestartEnabled === true }
+    if (document.querySelector('#tab-runtime').hidden === false && !runtimeOptionsDirty) {
+      els.autoDispatch.checked = Boolean(lastDiagnostics.autoDispatchEnabled)
+      els.gatewayRestart.checked = lastDiagnostics.gatewayRestartEnabled === true
+    }
   } catch { els.diagnostics.textContent = '无法读取桌面运行状态' }
 }
+
+els.autoDispatch.addEventListener('change', () => { runtimeOptionsDirty = true })
+els.gatewayRestart.addEventListener('change', () => { runtimeOptionsDirty = true })
 
 resetProviderForm(); resetMcp()
 await loadProviders(); await loadDiagnostics(); await loadConfig(); await loadAgents()
 setInterval(loadDiagnostics, 3_000)
-

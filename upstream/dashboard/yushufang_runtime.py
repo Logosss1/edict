@@ -279,6 +279,138 @@ def prepare_runtime(
     return config, environment, summary
 
 
+def prepare_local_dispatch_runtime(
+    root: pathlib.Path,
+    agent_id: str,
+    source_path: pathlib.Path,
+    *,
+    base_environment: dict[str, str] | None = None,
+    managed_gateway: bool = False,
+) -> tuple[dict, dict, dict]:
+    """Create a full-permission local runtime without Gateway secret lookup.
+
+    Ordinary desktop dispatches must keep the Agent's configured workspace,
+    skills, and tool policy.  They therefore cannot use ``prepare_runtime``:
+    that helper intentionally creates the read-only御书房 overlay.  The
+    embedded ``openclaw agent --local`` command does, however, still inspect
+    provider auth before starting.  A desktop-managed config normally stores
+    the API key as an env SecretRef, which would make OpenClaw ask a Gateway
+    for ``secrets.resolve`` even in local mode.
+
+    This helper makes a short-lived child config containing only the selected
+    provider and replaces its SecretRef with OpenClaw's direct environment
+    marker.  The actual value stays in the child environment and is never
+    written to disk or included in the returned summary.
+    """
+    source_path = pathlib.Path(source_path).expanduser()
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    data_dir = pathlib.Path(os.environ.get("EDICT_DATA_DIR", str(pathlib.Path(__file__).parent.parent / "data")))
+    source = apply_definitions(source, data_dir)
+    agents = source.get("agents", {}) if isinstance(source, dict) else {}
+    defaults = agents.get("defaults", {}) if isinstance(agents, dict) else {}
+    entries = agents.get("list", []) if isinstance(agents, dict) else []
+    agent = next(
+        (item for item in entries if isinstance(item, dict) and item.get("id") == agent_id),
+        None,
+    ) if isinstance(entries, list) else None
+    if not isinstance(agent, dict):
+        raise ValueError(f"OpenClaw 未注册 {agent_id}，请先在模型配置中应用设置")
+    raw_model = agent.get("model") or (defaults.get("model") if isinstance(defaults, dict) else None)
+    model = raw_model.get("primary") if isinstance(raw_model, dict) else raw_model
+    if not isinstance(model, str) or "/" not in model:
+        raise ValueError(f"{agent_id} 尚未绑定自定义供应商模型")
+    provider_id = model.split("/", 1)[0]
+
+    models = source.get("models", {}) if isinstance(source, dict) else {}
+    providers = models.get("providers", {}) if isinstance(models, dict) else {}
+    provider = providers.get(provider_id) if isinstance(providers, dict) else None
+    if not isinstance(provider, dict):
+        raise ValueError(f"供应商 {provider_id} 不在已配置目录中")
+
+    environment = dict(base_environment if base_environment is not None else os.environ)
+    api_key = provider.get("apiKey")
+    env_id = None
+    if isinstance(api_key, dict):
+        if api_key.get("source") != "env":
+            raise ValueError("桌面本地派发仅接受系统安全存储注入的环境密钥")
+        env_id = api_key.get("id")
+    elif isinstance(api_key, str) and api_key.strip():
+        marker = api_key.strip()
+        template = _ENV_SECRET_REF_RE.fullmatch(marker)
+        env_id = template.group(1) if template else None
+        if env_id is None and marker == _ROOM_PROVIDER_ENV_MARKER:
+            env_id = marker
+        elif env_id is None:
+            # Legacy configs may still contain a literal key.  Keep it child
+            # only and let the generated config use the safe marker.
+            environment[_ROOM_PROVIDER_ENV_MARKER] = marker
+    else:
+        raise ValueError("供应商密钥未配置，请在设置中保存密钥后重试")
+
+    if env_id:
+        resolved_key = environment.get(env_id.strip()) if isinstance(env_id, str) else None
+        if not isinstance(resolved_key, str) or not resolved_key.strip():
+            raise ValueError("供应商密钥未注入当前运行环境，请保存密钥后重新加载看板")
+        environment[_ROOM_PROVIDER_ENV_MARKER] = resolved_key.strip()
+
+    child_provider = copy.deepcopy(provider)
+    child_provider["apiKey"] = _ROOM_PROVIDER_ENV_MARKER
+    child_models = copy.deepcopy(models) if isinstance(models, dict) else {}
+    child_models["mode"] = "replace"
+    child_models["providers"] = {provider_id: child_provider}
+    config = copy.deepcopy(source)
+    config["models"] = child_models
+    # Make the provider marker explicit for the embedded resolver.  This is
+    # not a Gateway credential and contains no secret value.
+    config["secrets"] = {"providers": {"default": {"source": "env"}}}
+
+    if managed_gateway:
+        # Descendants can use different providers. Keep their bindings and
+        # resolve every configured provider independently, without copying keys.
+        referenced_providers = {provider_id}
+        for entry in [defaults, *entries]:
+            for model_value in [entry.get("model"), entry.get("subagents", {}).get("model")]:
+                refs = [model_value] if isinstance(model_value, str) else (
+                    [model_value.get("primary"), *model_value.get("fallbacks", [])] if isinstance(model_value, dict) else [])
+                referenced_providers.update(ref.split("/", 1)[0] for ref in refs if isinstance(ref, str) and "/" in ref)
+        for index, (other_id, other) in enumerate(providers.items()):
+            if other_id == provider_id or other_id not in referenced_providers or not isinstance(other, dict):
+                continue
+            child = copy.deepcopy(other)
+            key = child.get("apiKey")
+            marker = f"EDICT_DISPATCH_PROVIDER_{index}_KEY"
+            if isinstance(key, dict) and key.get("source") == "env":
+                value = environment.get(str(key.get("id", "")), "")
+            elif isinstance(key, str):
+                template = _ENV_SECRET_REF_RE.fullmatch(key.strip())
+                value = environment.get(template.group(1), "") if template else environment.get(key, key)
+            else:
+                value = ""
+            if not value:
+                # Do not silently let another Agent fall back to the parent's model.
+                raise ValueError(f"供应商 {other_id} 密钥未注入，请在设置中保存并重载")
+            environment[marker] = value
+            child["apiKey"] = {"source": "env", "provider": "default", "id": marker}
+            config["models"]["providers"][other_id] = child
+        # The native EDICT chain nests taizi -> zhongshu -> shangshu -> liubu.
+        subagents = config.setdefault("agents", {}).setdefault("defaults", {}).setdefault("subagents", {})
+        subagents["maxSpawnDepth"] = max(4, subagents.get("maxSpawnDepth", 1))
+
+    root = pathlib.Path(root).expanduser()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = root / "openclaw.json"
+    atomic_json_write(path, config)
+    path.chmod(0o600)
+    canonical_home = source_path.parent
+    environment.update({
+        "OPENCLAW_CONFIG_PATH": str(path),
+        "OPENCLAW_HOME": environment.get("OPENCLAW_HOME") or str(canonical_home),
+        "OPENCLAW_STATE_DIR": environment.get("OPENCLAW_STATE_DIR") or str(canonical_home),
+        "EDICT_OPENCLAW_HOME": environment.get("EDICT_OPENCLAW_HOME") or str(canonical_home),
+    })
+    return config, environment, {"model": model, "provider": provider_id}
+
+
 def read_tool_activity(room_root: pathlib.Path) -> list[dict]:
     """Read bounded, metadata-only activity from this room's native transcripts."""
     events = {}

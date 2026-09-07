@@ -1,6 +1,6 @@
 {
   "name": "edict-innercourt",
-  "version": "0.2.1",
+  "version": "0.3.1",
   "description": "Edict_InnerCourt 三省六部与御书房",
   "private": true,
   "type": "module",
@@ -67,6 +67,11 @@
         "filter": ["**/*"]
       },
       {
+        "from": "builtin",
+        "to": "builtin",
+        "filter": ["**/*"]
+      },
+      {
         "from": "../upstream",
         "to": "upstream",
         "filter": [
@@ -124,6 +129,7 @@
       }
     ],
     "mac": {
+      "icon": "assets/icon.icns",
       "category": "public.app-category.productivity",
       "target": [
         {

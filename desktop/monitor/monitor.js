@@ -52,7 +52,7 @@ function renderRuntime() {
     ['看板', runtime.dashboardRunning ? '运行中' : '未运行', runtime.dashboardRunning ? 'ok' : 'error'],
     ['healthz', text(health.status, '未知'), health.status === 'ok' ? 'ok' : 'warn'],
     ['OpenClaw', gatewayOnline ? 'Gateway 在线' : '未检测到在线 Agent', gatewayOnline ? 'ok' : 'warn'],
-    ['自动派发', runtime.autoDispatchEnabled ? '已开启' : '安全模式', runtime.autoDispatchEnabled ? 'warn' : 'ok'],
+    ['自动派发', runtime.autoDispatchEnabled ? '已开启' : '已关闭（手动模式）', runtime.autoDispatchEnabled ? 'warn' : 'ok'],
   ]
   els.runtime.innerHTML = items.map(([label, value, cls]) => `<div class="runtime-item"><span class="runtime-label">${escape(label)}</span><strong class="runtime-value ${cls}">${escape(value)}</strong></div>`).join('')
 }

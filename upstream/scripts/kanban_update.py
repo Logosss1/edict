@@ -33,8 +33,14 @@ import datetime
 import json, pathlib, sys, subprocess, logging, os, re
 from utils import python_bin
 
-_BASE = pathlib.Path(os.environ['EDICT_HOME']) if 'EDICT_HOME' in os.environ else pathlib.Path(__file__).resolve().parent.parent
-TASKS_FILE = _BASE / 'data' / 'tasks_source.json'
+# ``EDICT_HOME`` identifies the read-only application/project tree.  Desktop
+# installs keep mutable task data in ``EDICT_DATA_DIR`` instead, so data paths
+# must not be derived from the code tree.  The upstream project uses one root
+# for both; this preserves that fallback while keeping the desktop runtime's
+# single canonical task store.
+_BASE = pathlib.Path(os.environ['EDICT_HOME']) if os.environ.get('EDICT_HOME') else pathlib.Path(__file__).resolve().parent.parent
+_DATA_DIR = pathlib.Path(os.environ.get('EDICT_DATA_DIR', str(_BASE / 'data'))).expanduser().resolve()
+TASKS_FILE = _DATA_DIR / 'tasks_source.json'
 REFRESH_SCRIPT = _BASE / 'scripts' / 'refresh_live_data.py'
 
 log = logging.getLogger('kanban')
@@ -96,6 +102,70 @@ _ORG_AGENT_MAP = {
     '中书省': 'zhongshu', '门下省': 'menxia', '尚书省': 'shangshu',
 }
 
+_SIX_MINISTRY_AGENT_MAP = {
+    '礼部': 'libu', '户部': 'hubu', '兵部': 'bingbu',
+    '刑部': 'xingbu', '工部': 'gongbu', '吏部': 'libu_hr',
+}
+_SIX_MINISTRY_AGENT_TO_DEPT = {
+    agent_id: department for department, agent_id in _SIX_MINISTRY_AGENT_MAP.items()
+}
+_SIX_MINISTRY_ALIASES = {
+    '礼部尚书': '礼部', '户部尚书': '户部', '兵部尚书': '兵部',
+    '刑部尚书': '刑部', '工部尚书': '工部', '吏部尚书': '吏部',
+    'libu': '礼部', 'hubu': '户部', 'bingbu': '兵部',
+    'xingbu': '刑部', 'gongbu': '工部', 'libu_hr': '吏部',
+}
+
+# 与桌面总控台保持同一套确定性主责路由。它只负责在旧任务或 Agent
+# 忘记写 targetDept 时补齐一个主责部门，不改变三省六部的审批顺序。
+_MINISTRY_KEYWORDS = {
+    '礼部': ('文案', '文章', '博客', '翻译', '邮件', '内容', '发布', '文档', 'pdf', 'word'),
+    '户部': ('数据', '表格', 'excel', '统计', '预算', '报表', '分析', 'csv'),
+    '兵部': ('代码', '编程', '开发', '接口', '网页', '项目', 'git', '测试', 'bug'),
+    '刑部': ('安全', '合规', '审计', '漏洞', '权限', '风险', '法律'),
+    '工部': ('部署', '基础设施', '环境', '运行', '构建', '打包', '性能', '服务器'),
+    '吏部': ('人员', '流程', '排班', '组织', '角色', '团队'),
+}
+
+
+def _normalize_six_ministry(value):
+    raw = str(value or '').strip()
+    if raw in _SIX_MINISTRY_AGENT_MAP:
+        return raw
+    if raw in _SIX_MINISTRY_ALIASES:
+        return _SIX_MINISTRY_ALIASES[raw]
+    return _SIX_MINISTRY_ALIASES.get(raw.lower(), '')
+
+
+def _infer_primary_ministry(title):
+    text = re.sub(r'\s+', ' ', str(title or '').strip()).lower()
+    scores = {
+        department: sum(1 for keyword in keywords if keyword.lower() in text)
+        for department, keywords in _MINISTRY_KEYWORDS.items()
+    }
+    best = max(scores, key=scores.get)
+    return best if scores[best] else '兵部'
+
+
+def _resolve_execution_assignment(task):
+    """Return a deterministic (department, Agent) pair for 六部 execution."""
+    if not isinstance(task, dict):
+        return '', ''
+    for candidate in (task.get('targetDept'), task.get('org')):
+        department = _normalize_six_ministry(candidate)
+        if department:
+            return department, _SIX_MINISTRY_AGENT_MAP[department]
+    runtime_agent = ''
+    for key in ('OPENCLAW_AGENT_ID', 'OPENCLAW_AGENT', 'AGENT_ID'):
+        runtime_agent = (os.environ.get(key) or '').strip()
+        if runtime_agent:
+            break
+    department = _SIX_MINISTRY_AGENT_TO_DEPT.get(runtime_agent, '')
+    if department:
+        return department, _SIX_MINISTRY_AGENT_MAP[department]
+    department = _infer_primary_ministry(task.get('title', ''))
+    return department, _SIX_MINISTRY_AGENT_MAP[department]
+
 _AGENT_LABELS = {
     'main': '太子', 'taizi': '太子',
     'zhongshu': '中书省', 'menxia': '门下省', 'shangshu': '尚书省',
@@ -108,7 +178,7 @@ MAX_PROGRESS_LOG = 100  # 单任务最大进展日志条数
 def load():
     return atomic_json_read(TASKS_FILE, [])
 
-_REFRESH_SIGNAL_FILE = _BASE / 'data' / '.refresh_pending'
+_REFRESH_SIGNAL_FILE = _DATA_DIR / '.refresh_pending'
 
 def _trigger_refresh():
     """Debounced refresh — touch 信号文件，由独立 watcher 合并执行。
@@ -122,7 +192,7 @@ def _trigger_refresh():
         pass
     # Fallback: 如果信号文件 3 秒后仍存在（watcher 没在运行），直接 fork
     # 注意：这个 fallback 只在非 watcher 部署场景触发
-    if not (_BASE / 'data' / '.refresh_watcher_pid').exists():
+    if not (_DATA_DIR / '.refresh_watcher_pid').exists():
         try:
             subprocess.Popen([python_bin(), str(REFRESH_SCRIPT)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -131,7 +201,7 @@ def _trigger_refresh():
 
 
 # ── 审计日志 ──
-AUDIT_FILE = _BASE / 'data' / 'audit_log.json'
+AUDIT_FILE = _DATA_DIR / 'audit_log.json'
 MAX_AUDIT_LOG = 5000  # 审计日志最大条数
 
 def _append_audit(task_id, agent, action, old_val=None, new_val=None, reason=""):
@@ -259,10 +329,9 @@ def _infer_agent_id_from_runtime(task=None):
 
     if task:
         state = task.get('state', '')
-        org = task.get('org', '')
         aid = _STATE_AGENT_MAP.get(state)
         if aid is None and state in ('Doing', 'Next'):
-            aid = _ORG_AGENT_MAP.get(org)
+            _, aid = _resolve_execution_assignment(task)
         if aid:
             return aid
     return ''
@@ -367,6 +436,7 @@ def cmd_state(task_id, new_state, now_text=None):
     """更新任务状态（原子操作，含流转合法性校验 + 高风险拦截）"""
     old_state = [None]
     rejected = [False]
+    rejected_reason = ['非法状态转换']
     pending_confirm = [False]
     def modifier(tasks):
         t = find_task(tasks, task_id)
@@ -378,6 +448,7 @@ def cmd_state(task_id, new_state, now_text=None):
         if allowed is not None and new_state not in allowed:
             log.warning(f'⚠️ 非法状态转换 {task_id}: {old_state[0]} → {new_state}（允许: {allowed}）')
             rejected[0] = True
+            rejected_reason[0] = '非法状态转换'
             return tasks
         # 高风险操作拦截 → 进入 PendingConfirm
         if (old_state[0], new_state) in HIGH_RISK_TRANSITIONS:
@@ -393,8 +464,19 @@ def cmd_state(task_id, new_state, now_text=None):
             t['updatedAt'] = now_iso()
             pending_confirm[0] = True
             return tasks
+        execution_department = ''
+        execution_agent = ''
+        if new_state in ('Doing', 'Next'):
+            execution_department, execution_agent = _resolve_execution_assignment(t)
+
         t['state'] = new_state
-        if new_state in STATE_ORG_MAP:
+        if execution_department:
+            t['org'] = execution_department
+            t['targetDept'] = execution_department
+            t['targetAgent'] = execution_agent
+            t.pop('dispatchAssignmentRequired', None)
+            t.pop('dispatchAssignmentError', None)
+        elif new_state in STATE_ORG_MAP:
             t['org'] = STATE_ORG_MAP[new_state]
         if now_text:
             t['now'] = now_text
@@ -404,7 +486,7 @@ def cmd_state(task_id, new_state, now_text=None):
     _trigger_refresh()
     if rejected[0]:
         log.info(f'❌ {task_id} 状态转换被拒: {old_state[0]} → {new_state}')
-        _append_audit(task_id, _infer_agent_id_from_runtime(), 'state_rejected', old_state[0], new_state, '非法状态转换')
+        _append_audit(task_id, _infer_agent_id_from_runtime(), 'state_rejected', old_state[0], new_state, rejected_reason[0])
     elif pending_confirm[0]:
         log.info(f'⏳ {task_id} 高风险操作 {old_state[0]}→{new_state}，进入 PendingConfirm 待确认')
         _append_audit(task_id, _infer_agent_id_from_runtime(), 'pending_confirm', old_state[0], new_state, f'需 {CONFIRM_AUTHORITY.get(old_state[0], "shangshu")} 确认')
@@ -713,9 +795,9 @@ def cmd_todo(task_id, todo_id, title, status='not-started', detail=''):
 
 # ── 三级记忆系统 ──
 
-MEMORY_DIR = _BASE / 'data' / 'agent_memory'
-TASK_MEMORY_DIR = _BASE / 'data' / 'task_memory'
-SHARED_MEMORY_FILE = _BASE / 'data' / 'shared_memory.json'
+MEMORY_DIR = _DATA_DIR / 'agent_memory'
+TASK_MEMORY_DIR = _DATA_DIR / 'task_memory'
+SHARED_MEMORY_FILE = _DATA_DIR / 'shared_memory.json'
 MAX_AGENT_MEMORIES = 200
 
 
@@ -854,7 +936,8 @@ def cmd_delegate(task_id, from_agent, to_agent, instruction, return_spec=''):
         return
 
     sub_task_id = f'{task_id}-sub-{_short_uuid()}'
-    org = STATE_ORG_MAP.get('Doing', to_agent)
+    execution_department = _SIX_MINISTRY_AGENT_TO_DEPT.get(to_agent, '')
+    org = execution_department or STATE_ORG_MAP.get('Doing', to_agent)
 
     def modifier(tasks):
         sub_task = {
@@ -864,6 +947,7 @@ def cmd_delegate(task_id, from_agent, to_agent, instruction, return_spec=''):
             'title': f'[委派] {instruction[:40]}',
             'state': 'Doing',
             'org': org,
+            **({'targetDept': execution_department} if execution_department else {}),
             'official': from_agent,
             'now': instruction[:60],
             'delegation': {

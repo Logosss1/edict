@@ -261,7 +261,7 @@ Active tasks, sessions, and discussions are protected. Finish, cancel, or otherw
 
 ### Can I use this package on Windows or Linux?
 
-The distributed application is currently macOS-only and provides arm64 and x64 macOS packages. The upstream EDICT source has separate deployment paths; this desktop packaging project does not claim cross-platform desktop installers yet.
+The distributed application provides x64 packages for Windows and Linux, plus arm64 and x64 packages for macOS. Other architectures are not currently packaged.
 
 ## Development and verification
 
@@ -274,6 +274,8 @@ npm run verify       # TypeScript checks + Electron unit tests
 npm run test:ui      # Playwright dashboard tests
 npm run build        # Python, frontend, and Electron build
 npm run dist:mac     # arm64 + x64 macOS ZIP packages
+npm run dist:win     # Windows x64 ZIP package
+npm run dist:linux   # Linux x64 AppImage
 ```
 
 The Python suite is run from the repository root:

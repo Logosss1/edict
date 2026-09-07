@@ -20,12 +20,61 @@ const PYTHON_RELEASE = '20260901'
 const PYTHON_VERSION = '3.13.15'
 
 const NODE_SHA256 = {
-  arm64: '8294b7aa9b03997481c06babf1e8b270c859358f27da57a11509afe537ac381d',
-  x64: 'd1b5e999db158c62fe8f7267a4476b035d8bd93b1a605bac24a3f0dd166e3316',
+  darwin: {
+    arm64: '8294b7aa9b03997481c06babf1e8b270c859358f27da57a11509afe537ac381d',
+    x64: 'd1b5e999db158c62fe8f7267a4476b035d8bd93b1a605bac24a3f0dd166e3316',
+  },
+  linux: {
+    x64: '14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647',
+  },
+  win32: {
+    x64: '57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73',
+  },
 }
 const PYTHON_SHA256 = {
-  arm64: 'd3904bd6a072246e07aa0bdadee9a14e80521e42a943c0848059feb16a2816dc',
-  x64: 'f712a9143c8a5d248438ec7921a0b48d548bca4f1337d33c690d28c2d0504137',
+  darwin: {
+    arm64: 'd3904bd6a072246e07aa0bdadee9a14e80521e42a943c0848059feb16a2816dc',
+    x64: 'f712a9143c8a5d248438ec7921a0b48d548bca4f1337d33c690d28c2d0504137',
+  },
+  linux: {
+    x64: '8a689a077337bea6d1c4bc0b7df1d52fcaa28f5f67e50df8bf417c1e3f9d8874',
+  },
+  win32: {
+    x64: '63d263ab0162f34a241a56dc5b283c22d6e131f5516117e6a921350c69ba7d4f',
+  },
+}
+
+const PLATFORM_CONFIG = {
+  darwin: {
+    nodePlatform: 'darwin',
+    nodeArchive: 'tar.gz',
+    nodeBinary: join('bin', 'node'),
+    pythonTarget: (arch) => `${arch === 'arm64' ? 'aarch64' : 'x86_64'}-apple-darwin`,
+    pythonBinary: join('bin', 'python3'),
+    launcher: 'openclaw',
+  },
+  linux: {
+    nodePlatform: 'linux',
+    nodeArchive: 'tar.xz',
+    nodeBinary: join('bin', 'node'),
+    pythonTarget: () => 'x86_64-unknown-linux-gnu',
+    pythonBinary: join('bin', 'python3'),
+    launcher: 'openclaw',
+  },
+  win32: {
+    nodePlatform: 'win',
+    nodeArchive: 'zip',
+    nodeBinary: 'node.exe',
+    pythonTarget: () => 'x86_64-pc-windows-msvc',
+    pythonBinary: 'python.exe',
+    launcher: 'openclaw.cmd',
+  },
+}
+
+const PLATFORM_ARCHITECTURES = {
+  darwin: ['arm64', 'x64'],
+  linux: ['x64'],
+  win32: ['x64'],
 }
 
 function fail(message) {
@@ -58,45 +107,57 @@ async function downloadVerified(url, destination, expected) {
   await rename(temporary, destination)
 }
 
-async function extractTarGz(archive, destination) {
+async function extractArchive(archive, destination) {
   await mkdir(destination, { recursive: true })
-  await execFileAsync('/usr/bin/tar', ['-xzf', archive, '-C', destination], { maxBuffer: 16 * 1024 })
+  const hostTar = process.platform === 'win32' ? 'tar' : '/usr/bin/tar'
+  if (archive.endsWith('.zip')) {
+    if (process.platform === 'win32') {
+      await execFileAsync(hostTar, ['-xf', archive, '-C', destination], { maxBuffer: 16 * 1024 })
+    } else {
+      await execFileAsync('/usr/bin/unzip', ['-q', archive, '-d', destination], { maxBuffer: 16 * 1024 })
+    }
+    return
+  }
+  const flag = archive.endsWith('.tar.xz') ? '-xJf' : '-xzf'
+  await execFileAsync(hostTar, [flag, archive, '-C', destination], { maxBuffer: 16 * 1024 })
 }
 
-async function ensureNode(arch, archDirectory) {
-  const filename = `node-v${NODE_VERSION}-darwin-${arch}.tar.gz`
+async function ensureNode(platform, arch, archDirectory) {
+  const config = PLATFORM_CONFIG[platform]
+  const filename = `node-v${NODE_VERSION}-${config.nodePlatform}-${arch}.${config.nodeArchive}`
   const archive = join(cacheDirectory, filename)
-  await downloadVerified(`https://nodejs.org/dist/v${NODE_VERSION}/${filename}`, archive, NODE_SHA256[arch])
+  await downloadVerified(`https://nodejs.org/dist/v${NODE_VERSION}/${filename}`, archive, NODE_SHA256[platform]?.[arch])
   const staging = await mkdtemp(join(tmpdir(), 'edict-node-'))
   try {
-    await extractTarGz(archive, staging)
-    const extracted = join(staging, filename.slice(0, -'.tar.gz'.length))
-    const nodePath = join(archDirectory, 'bin', 'node')
+    await extractArchive(archive, staging)
+    const extracted = join(staging, filename.slice(0, -`.${config.nodeArchive}`.length))
+    const nodePath = join(archDirectory, 'bin', platform === 'win32' ? 'node.exe' : 'node')
     await mkdir(dirname(nodePath), { recursive: true })
-    await copyFile(join(extracted, 'bin', 'node'), nodePath)
-    await chmod(nodePath, 0o755)
+    await copyFile(join(extracted, config.nodeBinary), nodePath)
+    if (platform !== 'win32') await chmod(nodePath, 0o755)
     const license = join(extracted, 'LICENSE')
     if (await exists(license)) {
       await mkdir(join(sharedDirectory, 'licenses'), { recursive: true })
-      await copyFile(license, join(sharedDirectory, 'licenses', `node-${arch}-LICENSE.txt`))
+      await copyFile(license, join(sharedDirectory, 'licenses', `node-${platform}-${arch}-LICENSE.txt`))
     }
   } finally {
     await rm(staging, { recursive: true, force: true })
   }
 }
 
-async function ensurePython(arch, archDirectory) {
-  const filename = `cpython-${PYTHON_VERSION}+${PYTHON_RELEASE}-${arch === 'arm64' ? 'aarch64' : 'x86_64'}-apple-darwin-install_only_stripped.tar.gz`
+async function ensurePython(platform, arch, archDirectory) {
+  const config = PLATFORM_CONFIG[platform]
+  const filename = `cpython-${PYTHON_VERSION}+${PYTHON_RELEASE}-${config.pythonTarget(arch)}-install_only_stripped.tar.gz`
   const archive = join(cacheDirectory, filename)
   const encodedFilename = encodeURIComponent(filename)
-  await downloadVerified(`https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_RELEASE}/${encodedFilename}`, archive, PYTHON_SHA256[arch])
+  await downloadVerified(`https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_RELEASE}/${encodedFilename}`, archive, PYTHON_SHA256[platform]?.[arch])
   const staging = await mkdtemp(join(tmpdir(), 'edict-python-'))
   try {
-    await extractTarGz(archive, staging)
+    await extractArchive(archive, staging)
     const extracted = join(staging, 'python')
-    if (!(await exists(join(extracted, 'bin', 'python3')))) fail(`Python 运行时结构异常：${filename}`)
+    if (!(await exists(join(extracted, config.pythonBinary)))) fail(`Python 运行时结构异常：${filename}`)
     await cp(extracted, join(archDirectory, 'python'), { recursive: true, dereference: true })
-    await chmod(join(archDirectory, 'python', 'bin', 'python3'), 0o755)
+    if (platform !== 'win32') await chmod(join(archDirectory, 'python', config.pythonBinary), 0o755)
   } finally {
     await rm(staging, { recursive: true, force: true })
   }
@@ -131,7 +192,11 @@ async function ensureOpenClaw() {
   return entry
 }
 
-async function verifyOpenClaw(nodePath, entry, arch) {
+async function verifyOpenClaw(platform, nodePath, entry, arch) {
+  if (platform !== process.platform) {
+    console.log(`[portable-runtime] ${platform}/${arch} target verification skipped on ${process.platform}`)
+    return
+  }
   try {
     const { stdout } = await execFileAsync(nodePath, [entry, '--version'], {
       env: { ...process.env, PATH: dirname(nodePath), EDICT_AUTO_DISPATCH: '0' },
@@ -146,9 +211,21 @@ async function verifyOpenClaw(nodePath, entry, arch) {
   }
 }
 
-async function writeLauncher(archDirectory, entry) {
-  const launcher = join(archDirectory, 'bin', 'openclaw')
-  const content = `#!/bin/sh
+async function writeLauncher(platform, archDirectory, entry) {
+  const config = PLATFORM_CONFIG[platform]
+  const launcher = join(archDirectory, 'bin', config.launcher)
+  const content = platform === 'win32' ? [
+    '@echo off',
+    'setlocal',
+    'set "SCRIPT_DIR=%~dp0"',
+    'if exist "%SCRIPT_DIR%..\\openclaw\\node_modules\\openclaw\\openclaw.mjs" (',
+    '  set "OPENCLAW_ENTRY=%SCRIPT_DIR%..\\openclaw\\node_modules\\openclaw\\openclaw.mjs"',
+    ') else (',
+    '  set "OPENCLAW_ENTRY=%SCRIPT_DIR%..\\..\\shared\\openclaw\\node_modules\\openclaw\\openclaw.mjs"',
+    ')',
+    '"%SCRIPT_DIR%node.exe" "%OPENCLAW_ENTRY%" %*',
+    '',
+  ].join(String.fromCharCode(10)) : `#!/bin/sh
 set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 if [ -f "$script_dir/../openclaw/node_modules/openclaw/openclaw.mjs" ]; then
@@ -158,36 +235,40 @@ else
 fi
 exec "$script_dir/node" "$openclaw_entry" "$@"
 `
-  await writeFile(launcher, content, { mode: 0o755 })
-  await chmod(launcher, 0o755)
-  await chmod(entry, 0o644)
+  await writeFile(launcher, content, { mode: platform === 'win32' ? 0o644 : 0o755 })
+  if (platform !== 'win32') {
+    await chmod(launcher, 0o755)
+    await chmod(entry, 0o644)
+  }
 }
 
-async function prepare(arch) {
+async function prepare(platform, arch) {
   const archDirectory = join(portableDirectory, arch)
   await rm(archDirectory, { recursive: true, force: true })
   await mkdir(archDirectory, { recursive: true })
-  await ensureNode(arch, archDirectory)
-  await ensurePython(arch, archDirectory)
+  await ensureNode(platform, arch, archDirectory)
+  await ensurePython(platform, arch, archDirectory)
   const entry = await ensureOpenClaw()
-  await writeLauncher(archDirectory, entry)
-  await verifyOpenClaw(join(archDirectory, 'bin', 'node'), entry, arch)
-  await writeFile(join(archDirectory, 'runtime-manifest.json'), `${JSON.stringify({ arch, node: NODE_VERSION, python: PYTHON_VERSION, openclaw: OPENCLAW_VERSION }, null, 2)}\n`, { mode: 0o644 })
-  console.log(`[portable-runtime] ${arch} ready: Node ${NODE_VERSION}, Python ${PYTHON_VERSION}, OpenClaw ${OPENCLAW_VERSION}`)
+  await writeLauncher(platform, archDirectory, entry)
+  await verifyOpenClaw(platform, join(archDirectory, 'bin', platform === 'win32' ? 'node.exe' : 'node'), entry, arch)
+  await writeFile(join(archDirectory, 'runtime-manifest.json'), `${JSON.stringify({ platform, arch, node: NODE_VERSION, python: PYTHON_VERSION, openclaw: OPENCLAW_VERSION }, null, 2)}\n`, { mode: 0o644 })
+  console.log(`[portable-runtime] ${platform}/${arch} ready: Node ${NODE_VERSION}, Python ${PYTHON_VERSION}, OpenClaw ${OPENCLAW_VERSION}`)
 }
 
-if (process.platform !== 'darwin') fail('便携运行时目前只支持 macOS')
 const requested = process.argv.slice(2)
+const platformOptionIndex = requested.indexOf('--platform')
+const targetPlatform = platformOptionIndex >= 0 ? requested[platformOptionIndex + 1] : process.platform
+if (!PLATFORM_CONFIG[targetPlatform]) fail(`不支持的目标平台：${targetPlatform}`)
 const archOptionIndex = requested.indexOf('--arch')
 const archOption = archOptionIndex >= 0 ? requested[archOptionIndex + 1] : ''
 const architectures = requested.includes('--all')
-  ? ['arm64', 'x64']
+  ? PLATFORM_ARCHITECTURES[targetPlatform]
   : [archOption || process.arch]
 for (const arch of architectures) {
-  if (!['arm64', 'x64'].includes(arch)) fail(`不支持的 macOS 架构：${arch}`)
+  if (!PLATFORM_ARCHITECTURES[targetPlatform].includes(arch)) fail(`不支持的 ${targetPlatform} 架构：${arch}`)
 }
 
 await mkdir(cacheDirectory, { recursive: true })
 await mkdir(sharedDirectory, { recursive: true })
 await ensureOpenClaw()
-for (const arch of architectures) await prepare(arch)
+for (const arch of architectures) await prepare(targetPlatform, arch)

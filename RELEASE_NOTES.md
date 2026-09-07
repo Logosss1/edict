@@ -10,6 +10,7 @@ Release descriptions are maintained in English on the [GitHub Releases page](htt
 - Add bundled local MCP tools for workspace file listing, safe file reading/search, and project-scoped memory; existing user MCP configuration is preserved.
 - Add regression coverage for task actions, built-in capabilities, local dispatch, cancellation, packaged startup, and the full desktop UI flow.
 - Publish new Intel and Apple Silicon ZIP packages without replacing any earlier release artifacts.
+- Publish additional Windows x64 ZIP and Linux x64 AppImage packages in the same release while preserving the existing macOS artifacts.
 
 ## 0.2.1
 

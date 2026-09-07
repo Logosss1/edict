@@ -396,6 +396,7 @@ async function defaultCommandRunner(
     const child = spawn(binary, args, {
       env: environment,
       stdio: ['pipe', 'pipe', 'pipe'],
+      shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(binary),
       ...(args[0] === 'mcp' && args[1] === 'probe' ? { timeout: 45_000 } : {}),
     })
     let stdout = ''

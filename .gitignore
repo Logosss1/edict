@@ -28,6 +28,7 @@ desktop/portable-runtime/
 desktop/.portable-runtime-cache/
 desktop/dist-electron/
 desktop/release/
+desktop/release-cross/
 # Local packaged acceptance builds; never include them in the public source tree.
 desktop/release-test-*/
 desktop/test-results/

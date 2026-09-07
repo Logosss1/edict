@@ -118,11 +118,16 @@ function bundledOpenClawRoot(): string {
 }
 
 function bundledRuntimePath(name: 'openclaw' | 'node'): string {
-  return join(bundledRuntimeRoot(), 'bin', name)
+  const executableName = process.platform === 'win32'
+    ? (name === 'node' ? 'node.exe' : 'openclaw.cmd')
+    : name
+  return join(bundledRuntimeRoot(), 'bin', executableName)
 }
 
 function bundledPythonPath(): string {
-  return join(bundledRuntimeRoot(), 'python', 'bin', 'python3')
+  return process.platform === 'win32'
+    ? join(bundledRuntimeRoot(), 'python', 'python.exe')
+    : join(bundledRuntimeRoot(), 'python', 'bin', 'python3')
 }
 
 function preferredRuntimePaths(): RuntimePaths {
@@ -315,8 +320,8 @@ function pythonCandidates(): string[] {
     '/opt/homebrew/bin/python3',
     '/usr/local/bin/python3',
     '/Library/Frameworks/Python.framework/Versions/Current/bin/python3',
-    'python3',
-    '/usr/bin/python3',
+    process.platform === 'win32' ? 'python.exe' : 'python3',
+    process.platform === 'win32' ? 'python3.exe' : '/usr/bin/python3',
   ].filter((value, index, all): value is string => Boolean(value) && all.indexOf(value) === index)
 }
 
@@ -531,6 +536,7 @@ async function runOpenClawCommand(args: string[], timeoutMs = CHANNEL_COMMAND_TI
       cwd: upstreamDirectory(),
       env: environment,
       stdio: ['ignore', 'pipe', 'pipe'],
+      shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(binary),
     })
     const finish = (result: OpenClawCommandResult) => {
       if (settled) return

@@ -26,9 +26,12 @@ function run(file) {
   })
 }
 
+const bundledPython = process.platform === 'win32'
+  ? join(desktopDirectory, 'portable-runtime', process.arch, 'python', 'python.exe')
+  : join(desktopDirectory, 'portable-runtime', process.arch, 'python', 'bin', 'python3')
 const candidates = [
   process.env.EDICT_PYTHON,
-  join(desktopDirectory, 'portable-runtime', process.arch, 'python', 'bin', 'python3'),
+  bundledPython,
   'python3',
 ].filter((value, index, all) => Boolean(value) && all.indexOf(value) === index)
 

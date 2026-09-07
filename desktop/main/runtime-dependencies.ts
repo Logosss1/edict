@@ -51,7 +51,9 @@ export type RuntimeDiscovery = ReturnType<typeof discoverRuntime>
 export async function probeRuntime(runtime: RuntimeDiscovery, environment: NodeJS.ProcessEnv) {
   const probe = (file: string): Promise<string | null> => new Promise(resolve => {
     execFile(file, ['--version'], {
-      env: { ...environment, PATH: runtime.path }, timeout: 8000, maxBuffer: 8192,
+      env: { ...environment, PATH: runtime.path },
+      shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(file),
+      timeout: 8000, maxBuffer: 8192,
     }, (error, stdout) => {
       // Never expose arbitrary CLI output (which can include config secrets).
       const version = stdout.trim().match(/^(?:OpenClaw\s+)?v?(\d+\.\d+\.\d+(?:[-+.][\w.-]+)?)/i)?.[1]

@@ -12,7 +12,7 @@
     "test:ui": "playwright test",
     "build:electron": "node -e \"require('node:fs').rmSync('dist-electron', {recursive:true, force:true})\" && tsc -p tsconfig.json",
     "build:python": "node scripts/run-python.mjs scripts/prepare-python.py",
-    "build:frontend": "if [ ! -d ../upstream/edict/frontend/node_modules ]; then npm --prefix ../upstream/edict/frontend ci; fi && npm --prefix ../upstream/edict/frontend run build",
+    "build:frontend": "node scripts/ensure-frontend-dependencies.mjs && npm --prefix ../upstream/edict/frontend run build",
     "build": "npm run build:python && npm run build:frontend && npm run build:electron",
     "prepare": "npm run build:electron",
     "prepare:runtime": "node scripts/prepare-portable-runtime.mjs",
@@ -21,6 +21,10 @@
     "package:mac": "npm run prepare:runtime -- --arch arm64 && npm run build && electron-builder --mac dir --arm64",
     "dist:mac": "npm run dist:mac:zip",
     "dist:mac:zip": "npm run prepare:runtime:all && npm run build && electron-builder --mac zip --x64 --arm64",
+    "prepare:runtime:win": "node scripts/prepare-portable-runtime.mjs --platform win32 --arch x64",
+    "prepare:runtime:linux": "node scripts/prepare-portable-runtime.mjs --platform linux --arch x64",
+    "dist:win": "npm run prepare:runtime:win && npm run build && electron-builder --win zip --x64 --config.directories.output=release-cross/win",
+    "dist:linux": "npm run prepare:runtime:linux && npm run build && electron-builder --linux AppImage --x64 --config.directories.output=release-cross/linux",
     "verify": "npm run typecheck && npm run typecheck:test && npm test"
   },
   "dependencies": {
@@ -48,6 +52,8 @@
           "**/*",
           "!**/test/**",
           "!**/tests/**",
+          "!**/.env",
+          "!**/.env.*",
           "!**/*.map"
         ]
       },
@@ -80,6 +86,8 @@
           "!**/*.pyc",
           "!**/node_modules/**",
           "!**/.pytest_cache/**",
+          "!**/.env",
+          "!**/.env.*",
           "!data/**",
           "!**/.git/**",
           "!edict/frontend/**",
@@ -144,6 +152,27 @@
       "identity": null,
       "hardenedRuntime": false,
       "notarize": false
+    },
+    "win": {
+      "icon": "assets/icon.png",
+      "target": [
+        {
+          "target": "zip",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "Edict_InnerCourt-${version}-win-${arch}.${ext}"
+    },
+    "linux": {
+      "icon": "assets/icon.png",
+      "category": "Utility",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "Edict_InnerCourt-${version}-linux-${arch}.${ext}"
     }
   },
   "devDependencies": {

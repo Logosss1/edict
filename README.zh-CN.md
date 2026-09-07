@@ -261,7 +261,7 @@ Edict_InnerCourt 参考了几个成熟的开源项目，但始终以 EDICT 的�
 
 ### 可以在 Windows 或 Linux 上使用吗
 
-当前发布的桌面应用只支持 macOS，提供 arm64 和 x64 两种安装包。原始 EDICT 源码有其他部署路径，但本桌面项目目前不宣称提供 Windows/Linux 桌面安装包。
+当前发布的桌面应用提供 Windows x64、Linux x64，以及 macOS arm64 和 x64 安装包；暂未提供其他架构的桌面安装包。
 
 ## 开发与验证
 
@@ -274,6 +274,8 @@ npm run verify       # TypeScript 检查 + Electron 单测
 npm run test:ui      # Playwright 看板测试
 npm run build        # Python、前端和 Electron 构建
 npm run dist:mac     # 生成 arm64 + x64 macOS ZIP
+npm run dist:win     # 生成 Windows x64 ZIP
+npm run dist:linux   # 生成 Linux x64 AppImage
 ```
 
 Python 测试在仓库根目录执行：
